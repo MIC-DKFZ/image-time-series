@@ -4,15 +4,15 @@ import subprocess
 import subprocess as subp
 import sys
 import argparse
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, Tuple, List
+from types import ModuleType
 from collections import defaultdict
 import tempfile
 import shutil
 import zipfile
+from pytorch_lightning.core.datamodule import LightningDataModule
 import torch
-
 from visdom import Visdom
-
 import pytorch_lightning as pl
 import mlflow
 from pytorch_lightning.core.lightning import LightningModule
@@ -22,38 +22,71 @@ from pytorch_lightning.utilities import rank_zero_only
 
 class SourcePacker(object):
     """
-    Inspired by https://github.com/IDSIA/sacred
+    Methods taken from https://github.com/IDSIA/sacred,
+    will collect all custom source code.
     """
 
     @staticmethod
-    def join_paths(*parts):
-        """Join different parts together to a valid dotted path."""
+    def join_paths(*parts: str) -> str:
+        """Join different parts together to a valid dotted path.
+
+        Args:
+            parts: Elements of a path.
+
+        Return:
+            Path elements joined by dots.
+
+        """
         return ".".join(str(p).strip(".") for p in parts if p)
 
     @staticmethod
-    def iter_prefixes(path):
-        """
-        Iterate through all (non-empty) prefixes of a dotted path.
+    def iter_prefixes(path: str) -> str:
+        """Iterate through all (non-empty) prefixes of a dotted path.
+
         Example:
         >>> list(iter_prefixes('foo.bar.baz'))
         ['foo', 'foo.bar', 'foo.bar.baz']
+
+        Args:
+            path: Path with elements separated by dots.
+
+        Returns:
+            All possible prefixes.
+
         """
         split_path = path.split(".")
         for i in range(1, len(split_path) + 1):
             yield SourcePacker.join_paths(*split_path[:i])
 
     @staticmethod
-    def create_source_or_dep(mod, sources):
+    def create_source_or_dep(mod: ModuleType, sources: list) -> None:
+        """Add module file to source list.
+
+        Args:
+            mod: Module to provide files.
+            sources: List to collect file names.
+
+        """
+
         filename = ""
         if mod is not None and hasattr(mod, "__file__"):
             filename = os.path.abspath(mod.__file__)
 
-        ### To source or dependency
         if filename and filename not in sources and SourcePacker.is_source(filename):
             sources.add(filename)
 
     @staticmethod
-    def is_source(filename):
+    def is_source(filename: str) -> bool:
+        """Check if a file is a proper source file.
+
+        Args:
+            filename: File to check.
+
+        Returns:
+            True or False
+
+        """
+
         if (
             ".virtualenvs" in filename
             or "site-packages" in filename
@@ -64,10 +97,19 @@ class SourcePacker(object):
             return True
 
     @staticmethod
-    def git_info(file_):
+    def git_info(filename: str) -> Tuple[str, str, str]:
+        """Get git information (repo, branch, commit) for a file.
+
+        Args:
+            filename: The file for which we want to find the git information.
+
+        Returns:
+            Tuple of repo, branch and commit (or None, None, None)
+
+        """
 
         old_dir = os.getcwd()
-        file_path = os.path.abspath(file_)
+        file_path = os.path.abspath(filename)
         os.chdir(os.path.dirname(file_path))
 
         try:
@@ -91,7 +133,19 @@ class SourcePacker(object):
         return result
 
     @staticmethod
-    def gather_sources_and_dependencies(globs):
+    def gather_sources_and_dependencies(
+        globs: Dict,
+    ) -> Tuple[str, List[str], List[str]]:
+        """Get source information from globals() or another dict.
+
+        Args:
+            globs: globals()
+
+        Returns:
+            Tuple of python version, list of source files, list of dependencies.
+
+        """
+
         py_str = "python {}".format(sys.version)
         dependencies = (
             subprocess.check_output([sys.executable, "-m", "pip", "freeze"])
@@ -124,7 +178,14 @@ class SourcePacker(object):
         return py_str, sources, dependencies
 
     @staticmethod
-    def zip_sources(globs, filename):
+    def zip_sources(globs: Dict, filename: str) -> None:
+        """Create zip file with all custom source files and meta information.
+
+        Args:
+            globs: globals().
+            filename: Output file.
+
+        """
 
         py_str, sources, dependencies = SourcePacker.gather_sources_and_dependencies(
             globs=globs
@@ -151,23 +212,49 @@ vis_ = None
 
 def get_visdom(
     name: Optional[str] = "main",
-    server: Optional[str] = "http://localhost",
-    endpoint: Optional[str] = "events",
-    port: Optional[int] = 8097,
-    base_url: Optional[str] = "/",
-    ipv6: Optional[bool] = True,
+    server: str = "http://localhost",
+    endpoint: str = "events",
+    port: int = 8097,
+    base_url: str = "/",
+    ipv6: bool = True,
     http_proxy_host: Optional[str] = None,
     http_proxy_port: Optional[int] = None,
-    send: Optional[bool] = True,
+    send: bool = True,
     raise_exceptions: Optional[bool] = None,
-    use_incoming_socket: Optional[bool] = True,
+    use_incoming_socket: bool = True,
     log_to_filename: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
-    proxies: Optional[str] = None,
-    offline: Optional[bool] = False,
-    use_polling: Optional[bool] = False,
-):
+    proxies: Optional[Dict[str, str]] = None,
+    offline: bool = False,
+    use_polling: bool = False,
+) -> Visdom:
+    """Helper function to construct or get a global Visdom server object.
+
+    Args:
+        name: Name of the Visdom environment.
+        server: Hostname for the server.
+        endpoint: Endpoint to post events.
+        port: Run the server on this port.
+        base_url: Server base URL.
+        ipv6: Use IPv6.
+        http_proxy_host: Deprecated, use proxies.
+        http_proxy_port: Deprecated, use proxies.
+        send: Not entirely sure what this does that couldn't be achieved with
+            use_incoming_socket...
+        raise_exceptions: Raise exceptions instead of printing.
+        use_incoming_socket: Activate this to use callbacks.
+        log_to_filename: Log all events to this file.
+        username: Username for authentication.
+        password: Password for authentication (will be SHA256 hashed).
+        proxies: Dictionary of proxy mappings, e.g. {'http': 'foo.bar:3128'}.
+        offline: Offline mode, logs to file instead of server.
+        use_polling: Use polling instead of websocket?
+
+    Returns:
+        A global Visdom instance
+
+    """
 
     global vis_
 
@@ -196,27 +283,52 @@ def get_visdom(
 
 
 class VisdomLogger(LightningLoggerBase):
+    """A Lightning logger class for Visdom.
+
+    Args:
+        name: Name of the Visdom environment.
+        server: Hostname for the server.
+        endpoint: Endpoint to post events.
+        port: Run the server on this port.
+        base_url: Server base URL.
+        ipv6: Use IPv6.
+        http_proxy_host: Deprecated, use proxies.
+        http_proxy_port: Deprecated, use proxies.
+        send: Not entirely sure what this does that couldn't be achieved with
+            use_incoming_socket...
+        raise_exceptions: Raise exceptions instead of printing.
+        use_incoming_socket: Activate this to use callbacks.
+        log_to_filename: Log all events to this file.
+        username: Username for authentication.
+        password: Password for authentication (will be SHA256 hashed).
+        proxies: Dictionary of proxy mappings, e.g. {'http': 'foo.bar:3128'}.
+        offline: Offline mode, logs to file instead of server.
+        use_polling: Use polling instead of websocket?
+
+    """
+
     def __init__(
         self,
         name: Optional[str] = "main",
-        server: Optional[str] = "http://localhost",
-        endpoint: Optional[str] = "events",
-        port: Optional[int] = 8097,
-        base_url: Optional[str] = "/",
-        ipv6: Optional[bool] = True,
+        server: str = "http://localhost",
+        endpoint: str = "events",
+        port: int = 8097,
+        base_url: str = "/",
+        ipv6: bool = True,
         http_proxy_host: Optional[str] = None,
         http_proxy_port: Optional[int] = None,
-        send: Optional[bool] = True,
+        send: bool = True,
         raise_exceptions: Optional[bool] = None,
-        use_incoming_socket: Optional[bool] = True,
+        use_incoming_socket: bool = True,
         log_to_filename: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
         proxies: Optional[str] = None,
-        offline: Optional[bool] = False,
-        use_polling: Optional[bool] = False,
+        offline: bool = False,
+        use_polling: bool = False,
         **kwargs,
     ):
+
         super().__init__()
         self._name = name or ""
 
@@ -247,6 +359,8 @@ class VisdomLogger(LightningLoggerBase):
     @property
     @rank_zero_experiment
     def experiment(self) -> Visdom:
+        """Return the underlying Visdom object."""
+
         if self._experiment is None:
             return get_visdom()
         else:
@@ -258,12 +372,21 @@ class VisdomLogger(LightningLoggerBase):
         params: Union[Dict[str, Any], argparse.Namespace],
         metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Not implemented yet, only here for API completeness."""
         print("Visdom log_hyperparams not implemented yet...")
 
     @rank_zero_only
     def log_metrics(
         self, metrics: Dict[str, float], step: Optional[int] = None
     ) -> None:
+        """Log scalar valued metrics.
+
+        Args:
+            metrics: A {name: value} dictionary.
+            step: Value for the x axis.
+
+        """
+
         assert rank_zero_only.rank == 0, "experiment tried to log from global_rank != 0"
 
         # metrics = self._add_prefix(metrics)
@@ -275,7 +398,7 @@ class VisdomLogger(LightningLoggerBase):
                 v = v.item()
 
             if isinstance(v, dict):
-                print("Not implemented yet...")
+                print("Dict logging not implemented yet...")
                 # self.experiment.add_scalars(k, v, step)
             else:
                 try:
@@ -296,28 +419,36 @@ class VisdomLogger(LightningLoggerBase):
                     )
                     self._step_cntr[k] = int(step)
                 except Exception as e:
-                    m = f"\n you tried to log {v} which is not currently supported. Try a dict or a scalar/tensor."
+                    m = (
+                        "\n you tried to log {}, ".format(v)
+                        + "which is not currently supported."
+                        + "Try a dict or a scalar/tensor."
+                    )
                     type(e)(e.message + m)
 
     @rank_zero_only
-    def log_graph(self, model: LightningModule, input_array=None):
+    def log_graph(self, model: LightningModule, input_array: torch.tensor = None):
+        """Not implemented yet, only here for API completeness."""
         print("Visdom log_graph not implemented yet...")
 
     @rank_zero_only
     def save(self) -> None:
-        # super().save()
-        get_visdom().save([self.name])
+        """Save the Visdom environment."""
+        self.experiment.save([self.name])
 
     @rank_zero_only
     def finalize(self, status: str) -> None:
+        """Save environment at the end."""
         self.save()
 
     @property
     def name(self) -> str:
+        """Return the Visdom environment name."""
         return self._name
 
     @property
     def version(self) -> int:
+        """Don't use this information."""
         return 0
 
     def __getstate__(self):
@@ -326,7 +457,8 @@ class VisdomLogger(LightningLoggerBase):
         return state
 
 
-def make_default_parser():
+def make_default_parser() -> argparse.ArgumentParser:
+    """Construct a parser with a few commonly used options."""
 
     parser = argparse.ArgumentParser()
 
@@ -345,7 +477,8 @@ def make_default_parser():
     return parser
 
 
-def log_model_summary(experiment):
+def log_model_summary(experiment: LightningModule) -> None:
+    """Log a summary of a modules model in MLFlow."""
 
     summary = str(pl.core.memory.ModelSummary(experiment, mode="full"))
     tempdir = tempfile.mkdtemp()
@@ -358,7 +491,13 @@ def log_model_summary(experiment):
         shutil.rmtree(tempdir)
 
 
-def log_sources(globs):
+def log_sources(globs: Dict) -> None:
+    """Log source files for experiment in MLFlow.
+
+    Args:
+        globs: globals().
+
+    """
 
     tempdir = tempfile.mkdtemp()
     try:
@@ -370,14 +509,32 @@ def log_sources(globs):
 
 
 def run_experiment(
-    ExperimentModule,
-    DataModule,
-    args,
-    name,
-    globs=None,
-    callback_monitor="val_loss_total",
+    ExperimentModule: LightningModule,
+    DataModule: LightningDataModule,
+    args: argparse.Namespace,
+    name: str,
+    globs: Optional[Dict] = None,
+    callback_monitor: Optional[str] = "val_loss_total",
     **callback_kwargs,
 ):
+    """Run a LightningModule with a LightningDataModule.
+
+    This sets up logging, seeds, checkpointing and some other stuff.
+
+    Args:
+        ExperimentModule: The LightningModule
+        DataModule: The LightningDataModule
+        args: Parsed arguments from an ArgumentParser. Should have a few attributes,
+            including .mlflow, .visdom, .name, .seed, .no_train, .test, and anything
+            else that you would normally pass directly to the modules.
+        name:
+            A name for the experiment. MLFlow will use this as the experiment name and
+            args.name as the run name.
+        globs: globals().
+        callback_monitor: Monitor this metric for model checkpointing.
+        callback_kwargs: ModelCheckpoint will be initialized with this.
+
+    """
 
     # Logging
     mlflow.set_tracking_uri(args.mlflow)
@@ -401,17 +558,18 @@ def run_experiment(
     pl.seed_everything(args.seed)
 
     # checkpointing
-    default_callback_kwargs = dict(
-        dirpath=args.default_root_dir,
-        filename="checkpoint_{epoch:03d}_{val_loss_total:.3f}",
-        save_top_k=3,
-        save_last=True,
-        mode="min",
-    )
-    default_callback_kwargs.update(callback_kwargs)
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor=callback_monitor, **default_callback_kwargs
-    )
+    if callback_monitor is not None:
+        default_callback_kwargs = dict(
+            dirpath=args.default_root_dir,
+            filename="checkpoint_{epoch:03d}_{val_loss_total:.3f}",
+            save_top_k=3,
+            save_last=True,
+            mode="min",
+        )
+        default_callback_kwargs.update(callback_kwargs)
+        checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            monitor=callback_monitor, **default_callback_kwargs
+        )
 
     # construct data, trainer
     if args.resume_from_checkpoint:

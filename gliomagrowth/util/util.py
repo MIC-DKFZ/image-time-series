@@ -1,9 +1,24 @@
 import argparse
 import numpy as np
 import torch
+from typing import Union, Iterable, Optional
+from types import ModuleType
 
 
-def str2bool(v):
+def str2bool(v: Union[bool, str]) -> bool:
+    """Use this as the type for an ArgumentParser argument.
+
+    Allows you to do --my_flag false and similar, so the flag name can be positive,
+    regardless of the default value.
+
+    Args:
+        v: The parsed value.
+
+    Returns:
+        v interpreted as a boolean.
+
+    """
+
     if isinstance(v, bool):
         return v
     if v.lower() in ("yes", "true", "t", "y", "1"):
@@ -14,7 +29,36 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def nn_module_lookup(name, dim=2, additional_module_sources=None):
+def nn_module_lookup(
+    name: str,
+    dim: int = 2,
+    additional_module_sources: Optional[Union[ModuleType, Iterable[ModuleType]]] = None,
+) -> type:
+    """Look up nn.Modules from strings.
+
+    By default only looks in torch.nn, but you can manually provide more sources.
+
+    Examples:
+    >>> nn_module_lookup("conv", dim=3)
+    torch.nn.modules.conv.Conv3d
+    >>> nn_module_lookup("relu")
+    torch.nn.modulesReLU
+
+    Args:
+        name: Name of the desired module. Can be either be all lowercase or match
+            exactly (i.e. "ReLu" wouldn't match). Doesn't have to include Nd suffix,
+            but if it does, it takes precedence:
+            >>> nn_module_lookup("conv2d", dim=3)
+            torch.nn.modules.conv.Conv2d
+        dim: Will try to find "{name}{dim}d", but a match without the suffix takes
+            precedence.
+        additional_module_sources: Additional modules for the lookup. These will take
+            precedence over torch.nn
+
+    Returns:
+        The found type, will raise if none is found.
+
+    """
 
     if isinstance(name, type):
         return name
@@ -52,11 +96,42 @@ def nn_module_lookup(name, dim=2, additional_module_sources=None):
         )
 
 
-def num_parameters(model, count_all=True):
+def num_parameters(model: torch.nn.Module, count_all: bool = True) -> int:
+    """Count parameters in a model.
+
+    Args:
+        model: We iterate over model.parameters() and count .numel()
+        count_all: Also count parameters with p.requires_grad False
+
+    Returns:
+        The number of parameters.
+
+    """
+
     return sum(p.numel() for p in model.parameters() if p.requires_grad or count_all)
 
 
-def make_onehot(array, labels=None, axis=1, newaxis=False):
+def make_onehot(
+    array: Union[np.ndarray, torch.tensor],
+    labels: Optional[Iterable[int]] = None,
+    axis: int = 1,
+    newaxis: bool = False,
+) -> Union[np.ndarray, torch.tensor]:
+    """Convert input array to onehot.
+
+    Args:
+        array: The array to be converted.
+        labels: The labels that should be included in the onehot array
+            (others will become background). If None, we do np.unique on the array.
+        axis: Stack onehot slices along this axis. If the initial size of this axis is
+            larger than one, each array along this axis will be converted individually,
+            so the new size will be old_size * len(labels).
+        newaxis: Create a new axis to stack onehot slices.
+
+    Returns:
+        The onehot array (same type, dtype, device as input).
+
+    """
 
     # get labels if necessary
     if labels is None:
@@ -98,14 +173,35 @@ def make_onehot(array, labels=None, axis=1, newaxis=False):
     return new_array
 
 
-def stack_batch(tensor):
-    """Stacks first axis along second axis."""
+def stack_batch(
+    tensor: Union[np.ndarray, torch.tensor]
+) -> Union[np.ndarray, torch.tensor]:
+    """Stacks first axis along second axis.
+
+    Args:
+        tensor: Tensor with shape (B, C, ...).
+
+    Returns:
+        tensor reshaped to (B*C, ...).
+
+    """
 
     return tensor.reshape(tensor.shape[0] * tensor.shape[1], *tensor.shape[2:])
 
 
-def unstack_batch(tensor, B):
-    """Reverses stack_batch."""
+def unstack_batch(
+    tensor: Union[np.ndarray, torch.tensor], B: int
+) -> Union[np.ndarray, torch.tensor]:
+    """Reverses stack_batch.
+
+    Args:
+        tensor: Tensor with shape (B*C, ...).
+        B: Size of new zero axis, must evenly divide zero axis of input tensor.
+
+    Returns:
+        tensor: Tensor with shape (B, C, ...).
+
+    """
 
     N = tensor.shape[0] // B
     return tensor.reshape(B, N, *tensor.shape[1:])

@@ -1,14 +1,19 @@
+from __future__ import annotations
+
 import argparse
 import csv
 import json
 import numpy as np
 import os
 import pytorch_lightning as pl
+import matplotlib.pyplot as plt
+import matplotlib as mp
 from typing import Optional, Union, List, Dict, Tuple, Iterable
 
 from batchgenerators.dataloading.data_loader import SlimDataLoaderBase
 from batchgenerators.dataloading import MultiThreadedAugmenter, SingleThreadedAugmenter
 from batchgenerators.transforms import (
+    AbstractTransform,
     SpatialTransform_2,
     Compose,
     MirrorTransform,
@@ -219,11 +224,13 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         only_tumor: Only generate patches that contain tumor. Requires a
             multi_tumor_crop.json file in the data directory that contains the bounding
             boxes of the tumor for each case.
+        whole_tumor: Merge all foreground labels (except the dropped ones).
         dtype_seg: Segmentation data type.
         ddir: Optional data directory.
             Will default to gliomagrowth.data.glioma.data_dir.
         merge_context_target: Stack context and target into a single array.
             Activate this if you want to use data augmentation!
+        drop_labels: Move these labels to the background
 
     """
 
@@ -238,9 +245,11 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         subject_associations: Optional[Dict[str, str]] = None,
         scan_days: Optional[Dict[str, List[int]]] = None,
         only_tumor: bool = True,
+        whole_tumor: bool = False,
         dtype_seg: type = np.int64,
         ddir: Optional[str] = None,
         merge_context_target: bool = False,
+        drop_labels: Optional[Union[int, Iterable[int]]] = 3,
         **kwargs
     ):
 
@@ -270,8 +279,13 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         else:
             self._all_scan_days = scan_days
         self.only_tumor = only_tumor
+        self.whole_tumor = whole_tumor
         self.dtype_seg = dtype_seg
         self.merge_context_target = merge_context_target
+        if type(drop_labels) == int:
+            self.drop_labels = (drop_labels,)
+        else:
+            self.drop_labels == drop_labels
 
         self.current_position = 0
         self.was_initialized = False
@@ -441,6 +455,15 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             scan_days=np.stack(target_days)[:, :, None],
         )
 
+        if self.drop_labels is not None:
+            for l in self.drop_labels:
+                context["seg"][context["seg"] == l] = 0
+                target["seg"][target["seg"] == l] = 0
+
+        if self.whole_tumor:
+            context["seg"][context["seg"] > 0] = 1
+            target["seg"][target["seg"] > 0] = 1
+
         return context, target
 
 
@@ -504,7 +527,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
         if self.random_rotation:
             axes = [1, 2, 3]
             del axes[self.axis]
-            rot = self.randint(0, 4, size=(context["data"].shape[0],))
+            rot = self.rs.randint(0, 4, size=(context["data"].shape[0],))
             for r, num_rot in enumerate(rot):
                 context["data"][r] = np.rot90(context["data"][r], k=num_rot, axes=axes)
                 context["seg"][r] = np.rot90(context["seg"][r], k=num_rot, axes=axes)
@@ -518,18 +541,40 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
 
 
 def get_train_transforms(
-    patch_size=64,
-    dim=2,
-    axis=0,
-    transform_spatial=True,
-    transform_elastic=False,
-    transform_mirror=True,
-    transform_brightness=True,
-    transform_gamma=True,
-    transform_noise=True,
-    transform_blur=True,
-    p_per_sample=0.15,
-):
+    patch_size: int = 64,
+    dim: int = 2,
+    axis: int = 0,
+    transform_spatial: bool = True,
+    transform_elastic: bool = False,
+    transform_mirror: bool = True,
+    transform_brightness: bool = True,
+    transform_gamma: bool = True,
+    transform_noise: bool = True,
+    transform_blur: bool = True,
+    p_per_sample: float = 0.15,
+) -> AbstractTransform:
+    """Convenience function to construct data augmentation transforms that work well.
+
+    Args:
+        patch_size: Desired patch size. Only square patches supported at the moment.
+        dim: Should be 2 or 3.
+        axis: Extract 2D slices along this axis. Will be ignored in 3D.
+        transform_spatial: Rotation and scaling.
+        transform_elastic: Elastic deformation.
+        transform_mirror: Random mirroring.
+        transform_brightness: Brightness transformation.
+        transform_gamma: Random gamma curve variations.
+        transform_noise: Add Gaussian noise.
+        transform_blur: Random blurring.
+        p_per_sample: Probability for individual transforms.
+
+    Returns:
+        A composition of the chosen transforms.
+
+    """
+
+    if dim == 3:
+        axis = -1
 
     transforms = []
 
@@ -605,7 +650,50 @@ def get_train_transforms(
     return transforms
 
 
-class BovarecModule(pl.LightningDataModule):
+class GliomaModule(pl.LightningDataModule):
+    """LightningDataModule that wraps data generator and augmentation.
+
+    Args:
+        data_dir: The data directory. Data will only be loaded when generators are
+            created.
+        batch_size: The batch size :)
+        time_size: Number of consecutive timesteps that make up context/target pairs.
+            Target will always be the last timestep, context all but the last. Other
+            configurations are not supported atm, but should be easy to implement.
+            This can also be an iterable of multiple options. For example, if you want
+            to predict a future timestep from between 2 and 4 inputs, this should be
+            [3, 4, 5].
+        dim:
+        axis: Extract slices along this axis. Note that extraction along axes other than
+            0 can be slow and it might be worth saving the data in a different
+            orientation instead.
+        split_N: Split data into this many parts. split_val and split_test select the
+            parts that will be used as the respective sets.
+        seed: Random seed.
+        split_val: Index for validation data.
+        split_test: Index for test data.
+        patch_size: Target patch size (spatial dimension). Only sqquare patches
+            supported at the moment.
+        only_tumor: Only generate patches that contain tumor. Requires a
+            multi_tumor_crop.json file in the data directory that contains the bounding
+            boxes of the tumor for each case.
+        whole_tumor: Merge all positive labels into one.
+        drop_labels: Set these labels to background.
+        transform_spatial: Rotation and scaling.
+        transform_elastic: Elastic deformation.
+        transform_rot90: Random 90 degree rotations.
+        transform_mirror: Random mirroring.
+        transform_brightness: Brightness transformation.
+        transform_gamma: Random gamma curve variations.
+        transform_noise: Add Gaussian noise.
+        transform_blur: Random blurring.
+        random_date_shift: Randomly shift dates in this range (days).
+        normalize_date_factor: Multiply date values by this (after random shift) to
+            adjust value range. Original units are days, so we often get values >100.
+        n_processes: Use this many processes in parallel for data augmentation.
+
+    """
+
     def __init__(
         self,
         data_dir,
@@ -620,6 +708,7 @@ class BovarecModule(pl.LightningDataModule):
         patch_size=64,
         only_tumor=True,
         whole_tumor=False,
+        drop_labels=3,
         transform_spatial=True,
         transform_elastic=False,
         transform_rot90=True,
@@ -655,6 +744,8 @@ class BovarecModule(pl.LightningDataModule):
             self.split_train.remove(self.split_val)
         self.patch_size = patch_size
         self.only_tumor = only_tumor
+        self.whole_tumor = whole_tumor
+        self.drop_labels = drop_labels
         self.transform_spatial = transform_spatial
         self.transform_elastic = transform_elastic
         self.transform_rot90 = transform_rot90
@@ -667,7 +758,13 @@ class BovarecModule(pl.LightningDataModule):
         self.normalize_date_factor = normalize_date_factor
         self.n_processes = n_processes
 
-    def setup(self, stage=None):
+    def setup(self, stage: Optional[str] = None) -> None:
+        """Initialize data split (without actually loading data).
+
+        Args:
+            stage: ignored.
+
+        """
 
         spl = split(self.split_N, self.seed, self.data_dir)
         self.subjects_val = sorted(spl[self.split_val])
@@ -677,7 +774,8 @@ class BovarecModule(pl.LightningDataModule):
             self.subjects_train = self.subjects_train + spl[s]
         self.subjects_train = sorted(self.subjects_train)
 
-    def train_dataloader(self):
+    def train_dataloader(self) -> RandomFutureContextGenerator2D:
+        """Construct training dataloader."""
 
         train_data = load("r", subjects=self.subjects_train, ddir=self.data_dir)
         train_gen = RandomFutureContextGenerator2D(
@@ -687,11 +785,13 @@ class BovarecModule(pl.LightningDataModule):
             axis=self.axis,
             patch_size=self.patch_size,
             only_tumor=self.only_tumor,
+            whole_tumor=self.whole_tumor,
             ddir=self.data_dir,
             random_date_shift=self.random_date_shift,
             random_rotation=self.transform_rot90,
             number_of_threads_in_multithreaded=self.n_processes,
             merge_context_target=True,
+            drop_labels=self.drop_labels,
         )
 
         transforms = get_train_transforms(
@@ -716,6 +816,7 @@ class BovarecModule(pl.LightningDataModule):
             seeds=list(range(self.seed, self.seed + self.n_processes)),
             pin_memory=True,
         )
+        ### Use single threaded for debugging
         # train_gen = SingleThreadedAugmenter(
         #     train_gen,
         #     transforms,
@@ -723,7 +824,8 @@ class BovarecModule(pl.LightningDataModule):
 
         return train_gen
 
-    def val_dataloader(self):
+    def val_dataloader(self) -> FutureContextGenerator2D:
+        """Construct validation dataloader."""
 
         val_data = load("r", subjects=self.subjects_val, ddir=self.data_dir)
         val_gen = FutureContextGenerator2D(
@@ -733,14 +835,17 @@ class BovarecModule(pl.LightningDataModule):
             axis=self.axis,
             patch_size=self.patch_size,
             only_tumor=self.only_tumor,
+            whole_tumor=self.whole_tumor,
             ddir=self.data_dir,
             number_of_threads_in_multithreaded=1,
             merge_context_target=True,
+            drop_labels=self.drop_labels,
         )
 
         return val_gen
 
-    def test_dataloader(self):
+    def test_dataloader(self) -> FutureContextGenerator2D:
+        """Construct test dataloader."""
 
         test_data = load("r", subjects=self.subjects_test, ddir=self.data_dir)
         test_gen = FutureContextGenerator2D(
@@ -750,15 +855,20 @@ class BovarecModule(pl.LightningDataModule):
             axis=self.axis,
             patch_size=self.patch_size,
             only_tumor=self.only_tumor,
+            whole_tumor=self.whole_tumor,
             ddir=self.data_dir,
             number_of_threads_in_multithreaded=1,
             merge_context_target=True,
+            drop_labels=self.drop_labels,
         )
 
         return test_gen
 
     @staticmethod
-    def add_data_specific_args(parent_parser):
+    def add_data_specific_args(
+        parent_parser: argparse.ArgumentParser,
+    ) -> argparse.ArgumentParser:
+        """Add module arguments to parser."""
 
         parser = argparse.ArgumentParser(
             parents=[parent_parser], add_help=False, conflict_handler="resolve"
@@ -787,7 +897,60 @@ class BovarecModule(pl.LightningDataModule):
         return parser
 
     @classmethod
-    def load_from_checkpoint(cls, checkpoint_path, **kwargs):
+    def load_from_checkpoint(cls: type, checkpoint_path: str, **kwargs) -> GliomaModule:
+        """Load module from checkpoint.
+
+        Args:
+            checkpoint_path: Location of the checkpoint.
+
+        Returns:
+            The module initialized from the checkpoint.
+
+        """
         checkpoint = pl.utilities.cloud_io.load(checkpoint_path)["hyper_parameters"]
         checkpoint.update(kwargs)
         return cls(**checkpoint)
+
+    @staticmethod
+    def show_examples(
+        *dataloaders: SlimDataLoaderBase,
+        channel: int = 0,
+        seg_cmap: Optional[mp.colors.Colormap] = mp.cm.viridis,
+        figsize: int = 2
+    ) -> mp.figure.Figure:
+        """Show examples from all dataloaders. Mainly for visual debugging.
+
+        Args:
+            dataloaders: Show examples from these dataloaders. These will most likely
+                be what you get from .train_dataloader() etc.
+            channel: Which channel to show.
+            seg_cmap: Colormap for the segmentation.
+            figsize: Size of an individual panel in the figure.
+
+        Returns:
+            A figure object
+
+        """
+
+        batches = [next(dl) for dl in dataloaders]
+
+        nrows = 2 * len(batches)
+        ncols = max([b["data"].shape[1] // 4 for b in batches])
+        fig, ax = plt.subplots(nrows, ncols, figsize=(figsize * ncols, figsize * nrows))
+        if ax.ndim == 1:
+            ax = ax[:, None]
+
+        for t in range(ncols):
+            for b, batch in enumerate(batches):
+                if t * 4 < batch["data"].shape[1]:
+                    ax[2 * b, t].imshow(batch["data"][0, t * 4 + channel], cmap="gray")
+                    ax[2 * b + 1, t].imshow(
+                        batch["seg"][0, t], cmap=seg_cmap, vmin=0, vmax=3
+                    )
+
+        for r in range(ax.shape[0]):
+            for c in range(ax.shape[1]):
+                ax[r, c].axis("off")
+
+        fig.tight_layout()
+        return fig
