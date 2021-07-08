@@ -1,7 +1,8 @@
 import argparse
 import numpy as np
 import torch
-from typing import Union, Iterable, Optional
+from torch import nn
+from typing import Union, Iterable, Optional, Dict, Tuple
 from types import ModuleType
 
 
@@ -207,7 +208,20 @@ def unstack_batch(
     return tensor.reshape(B, N, *tensor.shape[1:])
 
 
-def merge_axes(tensor, ax1, ax2):
+def merge_axes(
+    tensor: Union[np.ndarray, torch.tensor], ax1: int, ax2: int
+) -> Union[np.ndarray, torch.tensor]:
+    """Merge two neighbouring axes.
+
+    Args:
+        tensor: Input tensor.
+        ax1: First axis.
+        ax2: Second axis.
+
+    Returns:
+        Tensor where ax1 now has shape ax1_size * ax2_size.
+
+    """
 
     ax1, ax2 = min(ax1, ax2), max(ax1, ax2)
 
@@ -218,7 +232,21 @@ def merge_axes(tensor, ax1, ax2):
     return tensor.reshape(*shape)
 
 
-def unmerge_axes(tensor, ax1, ax2, ax1_newsize):
+def unmerge_axes(
+    tensor: Union[np.ndarray, torch.tensor], ax1: int, ax2: int, ax1_newsize: int
+) -> Union[np.ndarray, torch.tensor]:
+    """Reverse merge_axes().
+
+    Args:
+        tensor: Input tensor.
+        ax1: First axis.
+        ax2: Second axis.
+        ax1_newsize: New size of ax1.
+
+    Returns:
+        Tensor where ax1 was split.
+
+    """
 
     ax1, ax2 = min(ax1, ax2), max(ax1, ax2)
 
@@ -229,9 +257,31 @@ def unmerge_axes(tensor, ax1, ax2, ax1_newsize):
     return tensor.reshape(*shape)
 
 
-def ct_to_transformable(context, target, keys=("data", "seg", "scan_days")):
+def ct_to_transformable(
+    context: Dict[str, Union[np.ndarray, torch.tensor]],
+    target: Dict[str, Union[np.ndarray, torch.tensor]],
+    keys: Iterable[str] = ("scan_days",),
+) -> Dict[str, Union[np.ndarray, torch.tensor]]:
+    """Convert a pair of context/target batch dictionaries to a single one.
+
+    This allows you to apply data augmentation. Data in context and target dictionaries
+    will be concatenated and placed in the context dict.
+
+    Args:
+        context: Context dict, needs to contain provided keys and "data" and "seg".
+        target: Target dict, needs to contain provided keys and "data" and "seg".
+        keys: Keys for which data should be concatenated ("data" and "seg" always used).
+
+    Returns:
+        Context dict (same object) with concatenated data.
+
+    """
+
+    keys = ["data", "seg"] + list(keys)
 
     for key in keys:
+        if key not in context or key not in target:
+            continue
         context[key] = np.concatenate((context[key], target[key]), 1)
         context[key] = merge_axes(context[key], 1, 2)
     context["target_size"] = target["data"].shape[1]
@@ -239,7 +289,26 @@ def ct_to_transformable(context, target, keys=("data", "seg", "scan_days")):
     return context
 
 
-def transformable_to_ct(batch, keys=("data", "seg", "scan_days"), make_new=False):
+def transformable_to_ct(
+    batch: Dict[str, Union[np.ndarray, torch.tensor]],
+    keys: Iterable[str] = ("scan_days",),
+    make_new: bool = False,
+) -> Tuple[
+    Dict[str, Union[np.ndarray, torch.tensor]],
+    Dict[str, Union[np.ndarray, torch.tensor]],
+]:
+    """Undo ct_to_transformable().
+
+    Args:
+        batch: Batch dict with concatenated context/target data. Also needs to contain
+            key "target_size".
+        keys: Keys for which data should be concatenated.
+        make_new: Create new dict instead of using input as context dict.
+
+    Returns:
+        Context and target dicts.
+
+    """
 
     if make_new:
         context = {}
@@ -259,14 +328,33 @@ def transformable_to_ct(batch, keys=("data", "seg", "scan_days"), make_new=False
 
 
 def modify_bbox(
-    old_bbox_lower,
-    old_bbox_upper,
-    target_size,
-    max_size,
-    skip_axes=None,
-    min_bbox_vals=None,
-    max_bbox_vals=None,
-):
+    old_bbox_lower: Iterable[int],
+    old_bbox_upper: Iterable[int],
+    target_size: Union[int, Iterable[int]],
+    max_size: Union[int, Iterable[int]],
+    skip_axes: Optional[Union[int, Iterable[int]]] = None,
+    min_bbox_vals: Optional[Union[int, Iterable[int]]] = None,
+    max_bbox_vals: Optional[Union[int, Iterable[int]]] = None,
+) -> Tuple[Iterable[int], Iterable[int]]:
+    """Modify a bounding box to a new size.
+
+    Expand or shrink a bounding box symmetrically to a desired size. However, you can
+    provide limits for the indices. If these are met, the bounding box would continue
+    to be expanded only on one side, for example.
+
+    Args:
+        old_bbox_lower: Lower limits of the input bounding box.
+        old_bbox_upper: Upper limits of the input bounding box.
+        target_size: Desired size of the bounding box (not individual limits!).
+        max_size: Size limit(s).
+        skip_axes: Ignore these axes.
+        min_bbox_vals: Lower limit(s) on indices.
+        max_bbox_vals: Upper limit(s) on indices.
+
+    Returns:
+        New lower and upper indices of the bounding box.
+
+    """
 
     if skip_axes is None:
         skip_axes = []
@@ -349,5 +437,63 @@ def modify_bbox(
 
 
 class NpzLazyDict(dict):
+    """A dict data type that lazily loads npz files.
+
+    You fill the dict with file names but receive a numpy array when accessing existing
+    keys.
+    """
+
     def __getitem__(self, key):
-        return np.load(super().__getitem__(key))[key]
+        return np.load(super().__getitem__(key))
+
+
+def is_conv(op: type) -> bool:
+    """Check if the input is one of the torch conv operators (or a subclass)."""
+
+    conv_types = (
+        nn.Conv1d,
+        nn.Conv2d,
+        nn.Conv3d,
+        nn.ConvTranspose1d,
+        nn.ConvTranspose2d,
+        nn.ConvTranspose3d,
+    )
+    if type(op) == type and issubclass(op, conv_types):
+        return True
+    elif type(op) in conv_types:
+        return True
+    else:
+        return False
+
+
+def match_to(x: torch.tensor, ref: torch.tensor, keep_axes: Iterable[int] = (1,)):
+    """Modify the shape of an input to match a reference by repeating elements.
+
+    Uses .expand() on the input.
+
+    Args:
+        x: Input tensor.
+        ref: Reference tensor.
+        keep_axes: Don't change these axes.
+
+    Returns:
+        The modified input.
+
+    """
+
+    target_shape = list(ref.shape)
+    for i in keep_axes:
+        target_shape[i] = x.shape[i]
+    target_shape = tuple(target_shape)
+    if x.shape == target_shape:
+        pass
+    elif x.ndim == 1:
+        x = x.unsqueeze(0)
+    else:
+        while x.ndim < len(target_shape):
+            x = x.unsqueeze(-1)
+
+    x = x.expand(*target_shape)
+    x = x.to(device=ref.device, dtype=ref.dtype)
+
+    return x

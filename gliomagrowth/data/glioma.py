@@ -358,7 +358,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             self._possible_sets = sets
             return sets
 
-    def reset(self) -> None:
+    def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
 
         self.current_position = self.thread_id * self.batch_size
@@ -492,7 +492,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
         self.random_rotation = random_rotation
         self.num_restarted = 0
 
-    def reset(self) -> None:
+    def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
 
         super(RandomFutureContextGenerator2D, self).reset()
@@ -758,7 +758,7 @@ class GliomaModule(pl.LightningDataModule):
         self.normalize_date_factor = normalize_date_factor
         self.n_processes = n_processes
 
-    def setup(self, stage: Optional[str] = None) -> None:
+    def setup(self, stage: Optional[str] = None):
         """Initialize data split (without actually loading data).
 
         Args:

@@ -59,7 +59,7 @@ class SourcePacker(object):
             yield SourcePacker.join_paths(*split_path[:i])
 
     @staticmethod
-    def create_source_or_dep(mod: ModuleType, sources: list) -> None:
+    def create_source_or_dep(mod: ModuleType, sources: list):
         """Add module file to source list.
 
         Args:
@@ -178,7 +178,7 @@ class SourcePacker(object):
         return py_str, sources, dependencies
 
     @staticmethod
-    def zip_sources(globs: Dict, filename: str) -> None:
+    def zip_sources(globs: Dict, filename: str):
         """Create zip file with all custom source files and meta information.
 
         Args:
@@ -371,14 +371,12 @@ class VisdomLogger(LightningLoggerBase):
         self,
         params: Union[Dict[str, Any], argparse.Namespace],
         metrics: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ):
         """Not implemented yet, only here for API completeness."""
         print("Visdom log_hyperparams not implemented yet...")
 
     @rank_zero_only
-    def log_metrics(
-        self, metrics: Dict[str, float], step: Optional[int] = None
-    ) -> None:
+    def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None):
         """Log scalar valued metrics.
 
         Args:
@@ -432,12 +430,12 @@ class VisdomLogger(LightningLoggerBase):
         print("Visdom log_graph not implemented yet...")
 
     @rank_zero_only
-    def save(self) -> None:
+    def save(self):
         """Save the Visdom environment."""
         self.experiment.save([self.name])
 
     @rank_zero_only
-    def finalize(self, status: str) -> None:
+    def finalize(self, status: str):
         """Save environment at the end."""
         self.save()
 
@@ -477,7 +475,7 @@ def make_default_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def log_model_summary(experiment: LightningModule) -> None:
+def log_model_summary(experiment: LightningModule):
     """Log a summary of a modules model in MLFlow."""
 
     summary = str(pl.core.memory.ModelSummary(experiment, mode="full"))
@@ -491,7 +489,7 @@ def log_model_summary(experiment: LightningModule) -> None:
         shutil.rmtree(tempdir)
 
 
-def log_sources(globs: Dict) -> None:
+def log_sources(globs: Dict):
     """Log source files for experiment in MLFlow.
 
     Args:
