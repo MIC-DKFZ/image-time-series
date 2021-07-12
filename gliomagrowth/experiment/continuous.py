@@ -19,13 +19,10 @@ from gliomagrowth.util.lightning import (
     make_default_parser,
     run_experiment,
 )
-
-from deeputil import loss as customloss
-from deeputil.model import MultiOutputInjectionConvEncoder, MultiInputConvDecoder
-from deeputil.model.attention import MultiheadAttention
-from deeputil.model.neuralprocess import AttentiveSegmentationProcess
-
-from deeputil.metrics import dice
+from gliomagrowth.nn import loss as customloss
+from gliomagrowth.nn.block import MultiOutputInjectionConvEncoder, MultiInputConvDecoder
+from gliomagrowth.nn.attention import MultiheadAttention
+from gliomagrowth.nn.neuralprocess import AttentiveSegmentationProcess
 
 
 class ContinuousTumorGrowth(pl.LightningModule):

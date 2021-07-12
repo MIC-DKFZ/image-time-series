@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 import torch
 from torch import nn
-from typing import Union, Iterable, Optional, Dict, Tuple
+from typing import Union, Iterable, Optional, Dict, Tuple, Type
 from types import ModuleType
 
 
@@ -466,7 +466,9 @@ def is_conv(op: type) -> bool:
         return False
 
 
-def match_to(x: torch.tensor, ref: torch.tensor, keep_axes: Iterable[int] = (1,)):
+def match_to(
+    x: torch.tensor, ref: torch.tensor, keep_axes: Iterable[int] = (1,)
+) -> torch.tensor:
     """Modify the shape of an input to match a reference by repeating elements.
 
     Uses .expand() on the input.
@@ -497,3 +499,75 @@ def match_to(x: torch.tensor, ref: torch.tensor, keep_axes: Iterable[int] = (1,)
     x = x.to(device=ref.device, dtype=ref.dtype)
 
     return x
+
+
+def match_shapes(
+    *args: torch.tensor, ignore_axes: Optional[Union[int, Iterable[int]]] = None
+) -> Iterable[torch.tensor]:
+    """
+    Expand multiple tensors to have matching shapes.
+    If a tensor has fewer dimensions than others, new axes will be added at the end.
+
+    Args:
+        *args: Any number of tensors.
+        ignore_axes: These axes won't be modified.
+
+    Returns:
+        Modified input tensors.
+
+    """
+
+    args = list(filter(lambda x: x is not None, args))
+
+    dims = [a.ndim for a in args]
+    target_dim = max(dims)
+    for a, arr in enumerate(args):
+        while arr.ndim < target_dim:
+            arr = arr.unsqueeze(-1)
+        args[a] = arr
+
+    shapes = np.array([np.array(a.shape) for a in args])
+    target_shape = np.max(shapes, axis=0)
+
+    for a, arr in enumerate(args):
+        target_shape_a = target_shape.copy()
+        if ignore_axes is not None:
+            if isinstance(ignore_axes, int):
+                target_shape_a[ignore_axes] = arr.shape[ignore_axes]
+            elif len(ignore_axes) > 0:
+                for ax in ignore_axes:
+                    target_shape_a[ax] = arr.shape[ax]
+        args[a] = arr.expand(*target_shape_a)
+
+    return tuple(args)
+
+
+def tensor_to_loc_scale(
+    tensor: torch.tensor,
+    distribution: Type[torch.distributions.Distribution],
+    logvar_transform: bool = True,
+    axis: int = 1,
+) -> torch.distributions.Distribution:
+    """
+    Split tensor into two and construct loc-scale distribution from it.
+
+    Args:
+        tensor: Shape (..., 2*C, ...).
+        distribution: A subclass of torch.distributions.Distribution that takes
+            loc and scale arguments.
+        logvar_transform: Apply x -> exp(0.5*x) to scale.
+        axis: Split along this axis.
+
+    Returns:
+        An instance of the input distribution.
+
+    """
+
+    if tensor.shape[axis] % 2 != 0:
+        raise IndexError("Axis {} of 'tensor' must be divisible by 2.".format(axis))
+
+    loc, scale = torch.split(tensor, tensor.shape[axis] // 2, axis)
+    if logvar_transform:
+        scale = torch.exp(0.5 * scale)
+
+    return distribution(loc, scale)
