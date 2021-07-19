@@ -113,11 +113,11 @@ def num_parameters(model: torch.nn.Module, count_all: bool = True) -> int:
 
 
 def make_onehot(
-    array: Union[np.ndarray, torch.tensor],
+    array: Union[np.ndarray, torch.Tensor],
     labels: Optional[Iterable[int]] = None,
     axis: int = 1,
     newaxis: bool = False,
-) -> Union[np.ndarray, torch.tensor]:
+) -> Union[np.ndarray, torch.Tensor]:
     """Convert input array to onehot.
 
     Args:
@@ -175,8 +175,8 @@ def make_onehot(
 
 
 def stack_batch(
-    tensor: Union[np.ndarray, torch.tensor]
-) -> Union[np.ndarray, torch.tensor]:
+    tensor: Union[np.ndarray, torch.Tensor]
+) -> Union[np.ndarray, torch.Tensor]:
     """Stacks first axis along second axis.
 
     Args:
@@ -191,8 +191,8 @@ def stack_batch(
 
 
 def unstack_batch(
-    tensor: Union[np.ndarray, torch.tensor], B: int
-) -> Union[np.ndarray, torch.tensor]:
+    tensor: Union[np.ndarray, torch.Tensor], B: int
+) -> Union[np.ndarray, torch.Tensor]:
     """Reverses stack_batch.
 
     Args:
@@ -209,8 +209,8 @@ def unstack_batch(
 
 
 def merge_axes(
-    tensor: Union[np.ndarray, torch.tensor], ax1: int, ax2: int
-) -> Union[np.ndarray, torch.tensor]:
+    tensor: Union[np.ndarray, torch.Tensor], ax1: int, ax2: int
+) -> Union[np.ndarray, torch.Tensor]:
     """Merge two neighbouring axes.
 
     Args:
@@ -233,8 +233,8 @@ def merge_axes(
 
 
 def unmerge_axes(
-    tensor: Union[np.ndarray, torch.tensor], ax1: int, ax2: int, ax1_newsize: int
-) -> Union[np.ndarray, torch.tensor]:
+    tensor: Union[np.ndarray, torch.Tensor], ax1: int, ax2: int, ax1_newsize: int
+) -> Union[np.ndarray, torch.Tensor]:
     """Reverse merge_axes().
 
     Args:
@@ -258,10 +258,10 @@ def unmerge_axes(
 
 
 def ct_to_transformable(
-    context: Dict[str, Union[np.ndarray, torch.tensor]],
-    target: Dict[str, Union[np.ndarray, torch.tensor]],
+    context: Dict[str, Union[np.ndarray, torch.Tensor]],
+    target: Dict[str, Union[np.ndarray, torch.Tensor]],
     keys: Iterable[str] = ("scan_days",),
-) -> Dict[str, Union[np.ndarray, torch.tensor]]:
+) -> Dict[str, Union[np.ndarray, torch.Tensor]]:
     """Convert a pair of context/target batch dictionaries to a single one.
 
     This allows you to apply data augmentation. Data in context and target dictionaries
@@ -290,12 +290,12 @@ def ct_to_transformable(
 
 
 def transformable_to_ct(
-    batch: Dict[str, Union[np.ndarray, torch.tensor]],
+    batch: Dict[str, Union[np.ndarray, torch.Tensor]],
     keys: Iterable[str] = ("scan_days",),
     make_new: bool = False,
 ) -> Tuple[
-    Dict[str, Union[np.ndarray, torch.tensor]],
-    Dict[str, Union[np.ndarray, torch.tensor]],
+    Dict[str, Union[np.ndarray, torch.Tensor]],
+    Dict[str, Union[np.ndarray, torch.Tensor]],
 ]:
     """Undo ct_to_transformable().
 
@@ -309,6 +309,8 @@ def transformable_to_ct(
         Context and target dicts.
 
     """
+
+    keys = ["data", "seg"] + list(keys)
 
     if make_new:
         context = {}
@@ -467,8 +469,8 @@ def is_conv(op: type) -> bool:
 
 
 def match_to(
-    x: torch.tensor, ref: torch.tensor, keep_axes: Iterable[int] = (1,)
-) -> torch.tensor:
+    x: torch.Tensor, ref: torch.Tensor, keep_axes: Iterable[int] = (1,)
+) -> torch.Tensor:
     """Modify the shape of an input to match a reference by repeating elements.
 
     Uses .expand() on the input.
@@ -502,8 +504,8 @@ def match_to(
 
 
 def match_shapes(
-    *args: torch.tensor, ignore_axes: Optional[Union[int, Iterable[int]]] = None
-) -> Iterable[torch.tensor]:
+    *args: torch.Tensor, ignore_axes: Optional[Union[int, Iterable[int]]] = None
+) -> Iterable[torch.Tensor]:
     """
     Expand multiple tensors to have matching shapes.
     If a tensor has fewer dimensions than others, new axes will be added at the end.
@@ -543,7 +545,7 @@ def match_shapes(
 
 
 def tensor_to_loc_scale(
-    tensor: torch.tensor,
+    tensor: torch.Tensor,
     distribution: Type[torch.distributions.Distribution],
     logvar_transform: bool = True,
     axis: int = 1,

@@ -4,8 +4,10 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+from torch.optim import lr_scheduler
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
+from typing import Optional, Any, Tuple, Dict, Union, List, Iterable
 
 import gliomagrowth as gg
 from gliomagrowth.util.util import (
@@ -13,6 +15,7 @@ from gliomagrowth.util.util import (
     str2bool,
     make_onehot,
     stack_batch,
+    transformable_to_ct,
 )
 from gliomagrowth.util.lightning import (
     VisdomLogger,
@@ -23,59 +26,135 @@ from gliomagrowth.nn import loss as customloss
 from gliomagrowth.nn.block import MultiOutputInjectionConvEncoder, MultiInputConvDecoder
 from gliomagrowth.nn.attention import MultiheadAttention
 from gliomagrowth.nn.neuralprocess import AttentiveSegmentationProcess
+from gliomagrowth.eval.metrics import dice
 
 
 class ContinuousTumorGrowth(pl.LightningModule):
+    """Experiment for tumor growth on a continuous time axis.
+
+    We're expecting image time series with observations consisting of
+    (image, segmentation, time value). We learn a growth model by predicting future
+    segmentations from a variable number of inputs.
+
+    Many arguments can be supplied as strings, e.g. 'adam', and will automatically be
+    translated to the appropriate PyTorch operators.
+
+    Args:
+        use_images: Use input images. Otherwise just segmentations and time values
+            are used.
+        in_channels: Image channels.
+        num_classes: Number of classes in background, including background.
+        dim: Either 2 or 3.
+        reconstruct_context: Also reconstruct the context observations. Recommended!
+        variational: Make the model variational. Set model_global_sum if you do this.
+        criterion_task: Loss for the output predictions.
+        criterion_task_reduction: Reduction argument for criterion_task.
+        criterion_task_onehot: Activate this if the target segmentation needs to be
+            onehot encoded.
+        criterion_latent: Loss for the latent space. Only used when variational as on.
+        criterion_latent_reduction: Reduction argument for latent loss.
+        criterion_latent_weight: Weight for latent loss.
+        optimizer: All modules are wrapped into one object and use the same optimizer.
+        learning_rate: Initial learning rate.
+        step_lr: Use StepLR scheduler. Mutually exclusive with reduce_lr_on_plateau.
+        step_lr_gamma: Gamma argument for StepLR. Multiplies learning rate by this
+            factor every epoch.
+        reduce_lr_on_plateau: Use ReduceLROnPlateau scheduler. Mutually exclusive with
+            StepLR.
+        reduce_lr_factor: Learning rate factor for ReduceLROnPlateau.
+        reduce_lr_patience: Patience for ReduceLROnPlateau.
+        representation_channels: Size of the latent representation, i.e. the deepest
+            output of the encoder.
+        model_global_sum: Averages over deepest representations (instead of attention).
+        model_spatial_attention: Use this many spatio-temporal attention mechanisms.
+            These are used in the lowest possible levels with the lowest spatial
+            resolution.
+        model_temporal_attention: Use "regular" attention (over time). Applied to
+            representations with higher spatial resolution. If model_spatial_attention
+            and model_temporal_attention together are smaller than the number of
+            representations returned by the encoder, the highest spatial resolutions
+            are averaged instead.
+        model_att_embed_dim: Embedding dimension for attention.
+        model_att_heads: Number of attention heads.
+        model_depth: Encoder and decoder depth (= number of blocks).
+        model_block_depth: Encoder and decoder block depth.
+        model_feature_maps: Initial number of feature maps. Multiplied by
+            model_feature_map_multiplier after each block.
+        model_feature_map_multiplier: Multiply feature map size by this after a block.
+        model_activation: Activation function.
+        model_activation_kwargs: Initialization arguments for activation.
+        model_output_activation: Output activation function.
+        model_output_activation_kwargs: Initialization arguments for output activation.
+        model_norm: Normalization operator.
+        model_norm_kwargs: Initialization arguments for normalization.
+        model_norm_depth: Only use normalization in the first N encoder blocks.
+        model_norm_depth_decoder: Only use normalization in the first N decoder blocks.
+        model_pool: Pooling operator
+        model_pool_kwargs: Initialization arguments for pooling.
+        model_upsample: Upsampling operator.
+        model_upsample_kwargs: Initialization arguments for upsampling.
+        model_initial_upsample_kwargs: Initialization arguments for initial upsampling.
+            Also uses model_upsample as operator.
+        model_dropout: Dropout operator.
+        model_dropout_kwargs: Initialization arguments for dropout.
+        model_global_pool: Global pooling operator. Applied before last encoder output.
+        model_global_pool_kwargs: Initialization arguments for global pooling.
+        model_use_coords: Concatenate coordinates at each depth.
+        test_dice_samples: During testing we sample multiple predictions to get the best
+            Dice from the prior. How many samples should we draw?
+
+    """
+
     def __init__(
         self,
-        use_images=True,
-        in_channels=4,  # image channels
-        num_classes=4,  # incl. background
-        dim=2,
-        reconstruct_context=True,
-        variational=True,
-        criterion_task="crossentropydiceloss",
-        criterion_task_reduction="mean",
-        criterion_task_onehot=True,
-        criterion_latent="kldivergence",
-        criterion_latent_weight=1.0,
-        optimizer="adam",
-        learning_rate=0.0001,
-        step_lr=False,
-        step_lr_gamma=0.99,  # every epoch
-        reduce_lr_on_plateau=False,
-        reduce_lr_factor=0.1,
-        reduce_lr_patience=10,
-        representation_channels=128,
-        normalize_date_factor=1.0,
-        model_global_sum=True,
-        model_spatial_attention=2,
-        model_temporal_attention=2,
-        model_att_embed_dim=128,
-        model_att_heads=8,
-        model_depth=5,
-        model_block_depth=2,
-        model_feature_maps=24,
-        model_feature_map_multiplier=2,
-        model_activation="leakyrelu",
-        model_activation_kwargs=None,
-        model_output_activation="softmax",
-        model_output_activation_kwargs=None,
-        model_norm="instancenorm",
-        model_norm_kwargs=None,
-        model_norm_depth=1,
-        model_norm_depth_decoder=0,
-        model_pool="avgpool",
-        model_pool_kwargs=None,
-        model_upsample="upsample",
-        model_upsample_kwargs=None,
-        model_initial_upsample_kwargs=None,
-        model_dropout=False,
-        model_dropout_kwargs=None,
-        model_global_pool="adaptiveavgpool",
-        model_global_pool_kwargs=None,
-        model_use_coords=True,
-        test_dice_samples=100,
+        use_images: bool = True,
+        in_channels: int = 4,  # image channels
+        num_classes: int = 3,  # incl. background
+        dim: int = 2,
+        reconstruct_context: bool = True,
+        variational: bool = True,
+        criterion_task: str = "crossentropydiceloss",
+        criterion_task_reduction: str = "mean",
+        criterion_task_onehot: str = True,
+        criterion_latent: str = "kldivergence",
+        criterion_latent_reduction: str = "mean",
+        criterion_latent_weight: float = 0.1,
+        optimizer: str = "adam",
+        learning_rate: float = 0.0001,
+        step_lr: bool = False,
+        step_lr_gamma: float = 0.99,  # every epoch
+        reduce_lr_on_plateau: bool = False,
+        reduce_lr_factor: float = 0.1,
+        reduce_lr_patience: int = 10,
+        representation_channels: int = 128,
+        model_global_sum: bool = True,
+        model_spatial_attention: int = 2,
+        model_temporal_attention: int = 2,
+        model_att_embed_dim: int = 128,
+        model_att_heads: int = 8,
+        model_depth: int = 5,
+        model_block_depth: int = 2,
+        model_feature_maps: int = 24,
+        model_feature_map_multiplier: int = 2,
+        model_activation: str = "leakyrelu",
+        model_activation_kwargs: Optional[dict] = None,
+        model_output_activation: str = "softmax",
+        model_output_activation_kwargs: Optional[dict] = None,
+        model_norm: str = "instancenorm",
+        model_norm_kwargs: Optional[dict] = None,
+        model_norm_depth: int = 1,
+        model_norm_depth_decoder: int = 0,
+        model_pool: str = "avgpool",
+        model_pool_kwargs: Optional[dict] = None,
+        model_upsample: str = "upsample",
+        model_upsample_kwargs: Optional[dict] = None,
+        model_initial_upsample_kwargs: Optional[dict] = None,
+        model_dropout: Optional[str] = None,
+        model_dropout_kwargs: Optional[dict] = None,
+        model_global_pool: str = "adaptiveavgpool",
+        model_global_pool_kwargs: Optional[dict] = None,
+        model_use_coords: bool = True,
+        test_dice_samples: int = 100,
         **kwargs
     ):
 
@@ -86,10 +165,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
         self.criterion_task = nn_module_lookup(criterion_task, dim, customloss)(
             reduction=self.hparams.criterion_task_reduction
         )
-        # weights hack so we can resume
-        self.criterion_task.weight = torch.tensor((1,) * num_classes).to(
-            self.device, torch.float
-        )
+        # # weights hack so we can resume
+        # self.criterion_task.weight = torch.tensor((1,) * num_classes).to(
+        #     self.device, torch.float
+        # )
         if variational:
             self.criterion_latent = nn_module_lookup(
                 criterion_latent, dim, customloss
@@ -97,7 +176,14 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         self.learning_rate = self.hparams.learning_rate
 
-    def configure_optimizers(self):
+    def configure_optimizers(
+        self,
+    ) -> Union[
+        torch.optim.Optimizer,
+        Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]],
+        Dict,
+    ]:
+
         optimizer = nn_module_lookup(self.hparams.optimizer, 0, torch.optim)
         optimizer = optimizer(self.model.parameters(), lr=self.learning_rate)
         if self.hparams.step_lr and self.hparams.reduce_lr_on_plateau:
@@ -121,7 +207,16 @@ class ContinuousTumorGrowth(pl.LightningModule):
             return optimizer
 
     @staticmethod
-    def make_model(hparams):
+    def make_model(hparams: argparse.Namespace) -> AttentiveSegmentationProcess:
+        """Construct model from hparams object.
+
+        Args:
+            hparams: mymodule.save_hyperparameters() -> mymodule.hparams
+
+        Returns:
+            An instance of AttentiveSegmentationProcess.
+
+        """
 
         # start with some basic checks
         if (
@@ -300,11 +395,30 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         return model_op(**model_kwargs)
 
-    def forward(self, *x, **xx):
+    def forward(self, *x: Any, **xx: Any):
+        """Forward pass through the module is just a forward pass through the model."""
 
         return self.model(*x, **xx)
 
-    def step(self, batch, batch_idx, return_all=False):
+    def step(
+        self, batch: Dict[str, np.ndarray], batch_idx: int, return_all: bool = False
+    ) -> Tuple[torch.Tensor, dict, Optional[dict]]:
+        """Base step that is used by train, val and test.
+
+        Args:
+            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch_idx: Not used.
+            return_all: Also return a dict with input and output tensors. Use this to
+                get the data for visualization and similar.
+
+        Returns:
+            (
+                Total loss,
+                Dictionary of scalar tensors for logging,
+                None or dictionary of higher-dimensional tensors
+            )
+
+        """
 
         context, target = transformable_to_ct(batch)
 
@@ -329,9 +443,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
         context_seg = make_onehot(context_seg, range(self.hparams.num_classes), axis=2)
         target_seg = make_onehot(target_seg, range(self.hparams.num_classes), axis=2)
 
-        context_query *= self.hparams.normalize_date_factor
-        target_query *= self.hparams.normalize_date_factor
-
         if self.hparams.reconstruct_context:
             target_query = torch.cat((context_query, target_query), 1)
             target_seg = torch.cat((context_seg, target_seg), 1)
@@ -347,6 +458,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             target_seg=target_seg,
         )
 
+        # prediction/task loss
         if not self.hparams.criterion_task_onehot:
             loss_task = (
                 self.criterion_task(
@@ -354,15 +466,17 @@ class ContinuousTumorGrowth(pl.LightningModule):
                     stack_batch(torch.argmax(target_seg, 2, keepdim=False)),
                 )
                 .mean(0)
-                .sum()
+                .sum()  # when reduction is none, we do sum and batch average
             )
         else:
             loss_task = (
                 self.criterion_task(stack_batch(prediction), stack_batch(target_seg))
                 .mean(0)
-                .sum()
+                .sum()  # when reduction is none, we do sum and batch average
             )
         log = {"loss_task": loss_task}
+
+        # latent loss
         if self.hparams.variational:
             # during validation we need to manually encode the posterior
             if not self.training:
@@ -380,6 +494,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
             log["loss_total"] = loss_total
         else:
             loss_total = loss_task
+
+        # doesn't hurt to monitor memory usage
         log["gpu_memory"] = torch.cuda.max_memory_allocated() // (1024 ** 2)
 
         log_tensor = {}
@@ -398,28 +514,51 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
     def log_tensor(
         self,
-        tensor,
-        name,
-        epoch=None,
-        batch_idx=None,
-        to_disk=False,
-        subdir=None,
-        nrow=8,
-        padding=2,
-        normalize=True,
-        range_=None,
-        scale_each=True,
-        pad_value=0,
-        split_channels=True,
+        tensor: torch.Tensor,
+        name: str,
+        epoch: Optional[int] = None,
+        batch_idx: Optional[int] = None,
+        to_disk: bool = False,
+        subdir: Optional[str] = None,
+        ntotal: int = 64,
+        nrow: int = 8,
+        padding: int = 2,
+        normalize: bool = True,
+        range_: Optional[Iterable[float]] = None,
+        scale_each: bool = False,
+        pad_value: float = 0.0,
+        split_channels: bool = True,
     ):
+        """Log a tensor.
+
+        We're assuming a shape of (B, N, C, ...) and try to create image grids from it.
+        At the moment only logging to Visdom and to disk is supported.
+
+        Args:
+            tensor: The data.
+            name: Should describe what you're trying to log.
+            epoch: Prepends "epoch{epoch}_" to the name.
+            batch_idx: Prepends "step{batch_idx}_" to the name.
+            to_disk: Save to disk.
+            subdir: Optional subdirectory in logging folder.
+            ntotal: Take this many elements from the batch axis.
+            nrow: Number of items per row in grid.
+            padding: Padding between items.
+            normalize: Normalize by range_.
+            range_: Normalize to this range.
+            scale_each: Normalize each item separately.
+            pad_value: Fill value for padding.
+            split_channels: Make separate image grid for each channel.
+
+        """
 
         # assume (B, N, C, H, W) shape
         image_grid = make_grid(
-            tensor=tensor[:64, -1].float(),
+            tensor=tensor[:ntotal, -1].float(),
             nrow=nrow,
             padding=padding,
             normalize=normalize,
-            range=range_,
+            value_range=range_,
             scale_each=scale_each,
             pad_value=pad_value,
         )
@@ -428,13 +567,13 @@ class ContinuousTumorGrowth(pl.LightningModule):
             if isinstance(logger, VisdomLogger):
                 if split_channels:
                     for c in range(image_grid.shape[0]):
-                        logger.experiment.add_image(
+                        logger.experiment.image(
                             image_grid[c],
                             name + "_c{}".format(c),
                             opts=dict(title=name + "_c{}".format(c)),
                         )
                 else:
-                    logger.experiment.add_image(
+                    logger.experiment.image(
                         image_grid,
                         name,
                         opts=dict(title=name),
@@ -463,7 +602,19 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 os.makedirs(os.path.dirname(fp), exist_ok=True)
                 save_image(image_grid, fp)
 
-    def training_step(self, batch, batch_idx):
+    def training_step(
+        self, batch: Dict[str, np.ndarray], batch_idx: int
+    ) -> torch.Tensor:
+        """Training step.
+
+        Args:
+            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch_idx: The batch index.
+
+        Returns:
+            The total loss
+
+        """
 
         return_all = batch_idx % self.trainer.log_every_n_steps == 0 and batch_idx > 0
         loss, log, log_tensor = self.step(batch, batch_idx, return_all=return_all)
@@ -515,7 +666,19 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(
+        self, batch: Dict[str, np.ndarray], batch_idx: int
+    ) -> torch.Tensor:
+        """Validation step.
+
+        Args:
+            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch_idx: The batch index.
+
+        Returns:
+            The total loss
+
+        """
 
         return_all = batch_idx == 0
         loss, log, log_tensor = self.step(batch, batch_idx, return_all=return_all)
@@ -563,7 +726,19 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         return loss
 
-    def test_step(self, batch, batch_idx):
+    def test_step(
+        self, batch: Dict[str, np.ndarray], batch_idx: int
+    ) -> Tuple[str, float, float, float, float, float, float, float]:
+        """Test step.
+
+        Args:
+            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch_idx: The batch index.
+
+        Returns:
+            Several metrics for logging
+
+        """
 
         gt_volume = np.sum(batch["seg"][0, -1] > 0)
         if gt_volume == 0:
@@ -577,10 +752,14 @@ class ContinuousTumorGrowth(pl.LightningModule):
         self.hparams.reconstruct_context = old_reconstruct_context
 
         gt_segmentation = log_tensor["target_seg"][0, -1]
-        gt_segmentation = torch.argmax(gt_segmentation, 0, keepdim=False) > 0
         prediction = log_tensor["prediction"][0, -1]
-        prediction = torch.argmax(prediction, 0, keepdim=False) > 0
-        predicted_dice = dice(prediction, gt_segmentation)
+        prediction = torch.argmax(prediction, 0, keepdim=True)
+        dice_wt = dice(
+            prediction, torch.argmax(gt_segmentation, 0, keepdim=True), batch_axes=0
+        )
+        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=0)
+        dice_all = dice(prediction, gt_segmentation, batch_axes=0)
+        dice_all = torch.cat((dice_all, dice_wt), 0)
 
         # make samples
         samples = self.model.sample(
@@ -591,25 +770,29 @@ class ContinuousTumorGrowth(pl.LightningModule):
             log_tensor["context_image"],
             None,
         )[:, 0, -1]
-        samples = torch.argmax(samples, 1, keepdim=False) > 0
+        samples = torch.argmax(samples, 1, keepdim=True)
+        dice_wt_samples = dice(
+            samples,
+            torch.argmax(gt_segmentation, 0, keepdim=True).expand_as(samples),
+            batch_axes=(0, 1),
+        )
+        samples = make_onehot(samples, range(self.hparams.num_classes), axis=1)
+        dice_all_samples = dice(
+            samples, gt_segmentation.expand_as(samples), batch_axes=(0, 1)
+        )
+        dice_all_samples = torch.cat((dice_all_samples, dice_wt_samples), 1)
 
-        # get dice scores
-        tp = samples * gt_segmentation[None, ...]
-        fp = samples * torch.logical_not(gt_segmentation[None, ...])
-        fn = torch.logical_not(samples) * gt_segmentation[None, ...]
-        while len(tp.shape) > 1:
-            tp = tp.sum(-1)
-            fp = fp.sum(-1)
-            fn = fn.sum(-1)
-        dice_scores = (2 * tp.float()) / (2 * tp.float() + fp.float() + fn.float())
-        dice_scores[torch.isnan(dice_scores)] = 0
-        best_dice = torch.max(dice_scores)
+        # PyTorch doesn't have nanmax, apparently
+        nan_locations = torch.isnan(dice_all_samples)
+        dice_all_samples[nan_locations] = 0
+        best_dice = torch.max(dice_all_samples, 0)[0]
+        dice_all_samples[nan_locations] = np.nan
 
         # get volumes
-        sum_axes = tuple(range(1, len(samples.shape)))
-        pred_volumes = torch.sum(samples, sum_axes)
+        sum_axes = tuple(range(1, samples.ndim))
+        pred_volumes = torch.sum(torch.argmax(samples, 1, keepdim=True) > 0, sum_axes)
         best_volume_index = torch.argmin(torch.abs(pred_volumes - gt_volume))
-        best_volume_dice = dice_scores[best_volume_index]
+        best_volume_dice = dice_all_samples[best_volume_index]
 
         subject_info = "_".join(
             [
@@ -620,32 +803,51 @@ class ContinuousTumorGrowth(pl.LightningModule):
             ]
         )
 
-        return (
-            subject_info,
-            gt_volume,
-            log["loss_task"].item(),
-            log["loss_latent"].item(),
-            log["loss_total"].item(),
-            predicted_dice,
-            best_volume_dice.item(),
-            best_dice.item(),
+        result = np.array(
+            [
+                subject_info,
+                gt_volume,
+                log["loss_task"].item(),
+                log["loss_latent"].item(),
+                log["loss_total"].item(),
+            ],
+            dtype=object,
         )
+        result = np.concatenate(
+            (
+                result,
+                dice_all.cpu().numpy(),
+                best_volume_dice.cpu().numpy(),
+                best_dice.cpu().numpy(),
+            ),
+            0,
+        )
+
+        return result
 
     def test_epoch_end(self, outputs):
 
-        arr = np.array(outputs, dtype=object)
+        columns = [
+            "Subject and Timestep",
+            "GT Volume",
+            "Loss Task",
+            "Loss Latent",
+            "Loss",
+        ]
+        columns_dice = ["Dice Foreground"]
+        columns_best_volume_dice = ["Best Volume Dice Foreground"]
+        columns_best_dice = ["Best Dice Foreground"]
+        for c in range(self.hparams.num_classes):
+            columns_dice.insert(-1, "Dice Class " + str(c))
+            columns_best_volume_dice.insert(-1, "Best Volume Dice Class " + str(c))
+            columns_best_dice.insert(-1, "Best Dice Class " + str(c))
+
         arr = pd.DataFrame(
-            arr,
-            columns=[
-                "Subject and Timestep",
-                "GT Volume",
-                "Loss Task",
-                "Loss Latent",
-                "Loss",
-                "Dice",
-                "Prior Best Volume Dice",
-                "Prior Best Dice",
-            ],
+            np.stack(outputs),
+            columns=columns
+            + columns_dice
+            + columns_best_volume_dice
+            + columns_best_dice,
         )
         arr = arr.set_index("Subject and Timestep")
         arr.to_csv(os.path.join(self.trainer._default_root_dir, "test.csv"))
@@ -667,6 +869,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--criterion_task_reduction", type=str, default="mean")
         parser.add_argument("--criterion_task_onehot", type=str2bool, default=True)
         parser.add_argument("--criterion_latent", type=str, default="kldivergence")
+        parser.add_argument("--criterion_latent_reduction", type=str, default="mean")
         parser.add_argument("--optimizer", type=str, default="adam")
         parser.add_argument("--learning_rate", type=float, default=0.0001)
         parser.add_argument("--step_lr", type=str2bool, default=False)
@@ -675,12 +878,11 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--reduce_lr_factor", type=float, default=0.1)
         parser.add_argument("--reduce_lr_patience", type=int, default=10)
         parser.add_argument("--in_channels", type=int, default=4)
-        parser.add_argument("--num_classes", type=int, default=4)
+        parser.add_argument("--num_classes", type=int, default=3)
         parser.add_argument("--dim", type=int, default=2)
         parser.add_argument("--variational", type=str2bool, default=True)
-        parser.add_argument("--criterion_latent_weight", type=float, default=0.001)
+        parser.add_argument("--criterion_latent_weight", type=float, default=0.1)
         parser.add_argument("--representation_channels", type=int, default=128)
-        parser.add_argument("--normalize_date_factor", type=float, default=1.0)
         parser.add_argument("--model_spatial_attention", type=int, default=2)
         parser.add_argument("--model_temporal_attention", type=int, default=0)
         parser.add_argument("--model_att_embed_dim", type=int, default=128)
@@ -692,7 +894,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--model_norm", type=str, default="instancenorm")
         parser.add_argument("--model_norm_depth", type=int, default=1)
         parser.add_argument("--model_norm_depth_decoder", type=int, default=0)
-        parser.add_argument("--model_dropout", type=str2bool, default=False)
+        parser.add_argument("--model_dropout", type=str, default=None)
         parser.add_argument("--test_dice_samples", type=int, default=100)
 
         return parser
@@ -712,11 +914,11 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, default="glioma")
     temp_args, _ = parser.parse_known_args()
     if temp_args.data == "glioma":
-        DataModule = gg.data.lightning.GliomaModule
+        DataModule = gg.data.GliomaModule
     else:
         # try to find a module in gg.data.lightning that matches the name
         module_name = temp_args.data.capitalize() + "Module"
-        DataModule = getattr(gg.data.lightning, module_name, None)
+        DataModule = getattr(gg.data, module_name, None)
         if DataModule is None:
             raise ValueError("Unknown module type: {}".format(temp_args.data))
 

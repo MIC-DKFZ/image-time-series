@@ -230,7 +230,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             Will default to gliomagrowth.data.glioma.data_dir.
         merge_context_target: Stack context and target into a single array.
             Activate this if you want to use data augmentation!
-        drop_labels: Move these labels to the background
+        drop_labels: Move these labels to the background.
+        normalize_date_factor: Multiply date values by this.
 
     """
 
@@ -250,6 +251,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         ddir: Optional[str] = None,
         merge_context_target: bool = False,
         drop_labels: Optional[Union[int, Iterable[int]]] = 3,
+        normalize_date_factor: float = 0.01,
         **kwargs
     ):
 
@@ -285,7 +287,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if type(drop_labels) == int:
             self.drop_labels = (drop_labels,)
         else:
-            self.drop_labels == drop_labels
+            self.drop_labels = drop_labels
+        self.normalize_date_factor = normalize_date_factor
 
         self.current_position = 0
         self.was_initialized = False
@@ -443,7 +446,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         context = dict(
             data=np.stack(context_data),
             seg=np.stack(context_seg).astype(self.dtype_seg),
-            scan_days=np.stack(context_days)[:, :, None],
+            scan_days=np.stack(context_days)[:, :, None].astype(np.float32),
             slices=np.array(slices),
             timesteps=np.array(timesteps),
             subjects=np.array(subjects),
@@ -452,8 +455,11 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         target = dict(
             data=np.stack(target_data),
             seg=np.stack(target_seg).astype(self.dtype_seg),
-            scan_days=np.stack(target_days)[:, :, None],
+            scan_days=np.stack(target_days)[:, :, None].astype(np.float32),
         )
+
+        context["scan_days"] *= self.normalize_date_factor
+        target["scan_days"] *= self.normalize_date_factor
 
         if self.drop_labels is not None:
             for l in self.drop_labels:
@@ -471,7 +477,8 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
     """Same as FutureContextGenerator2D, but shuffles data.
 
     Args:
-        random_date_shift: Randomly shift dates (in days, drawn uniformly).
+        random_date_shift: Randomly shift dates (drawn uniformly). This is applied
+            AFTER normalize_date_factor!
         random_rotation: Random 90 degree rotations. You can also do this with data
             augmentation, but if you only want these rotations, it's more convenient
             to do internally.
@@ -481,7 +488,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
     def __init__(
         self,
         *args,
-        random_date_shift: Iterable[int] = [-100, 100],
+        random_date_shift: Iterable[float] = (-1.0, 1.0),
         random_rotation: bool = True,
         **kwargs
     ):
@@ -687,8 +694,9 @@ class GliomaModule(pl.LightningDataModule):
         transform_gamma: Random gamma curve variations.
         transform_noise: Add Gaussian noise.
         transform_blur: Random blurring.
-        random_date_shift: Randomly shift dates in this range (days).
-        normalize_date_factor: Multiply date values by this (after random shift) to
+        random_date_shift: Randomly shift dates in this range. This is applied AFTER
+            normalize_date_factor!
+        normalize_date_factor: Multiply date values by this to
             adjust value range. Original units are days, so we often get values >100.
         n_processes: Use this many processes in parallel for data augmentation.
 
@@ -696,30 +704,30 @@ class GliomaModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        data_dir,
-        batch_size=128,
-        time_size=(2, 3, 4, 5),
-        dim=2,
-        axis=0,
-        split_N=5,
-        seed=1,
-        split_val=3,
-        split_test=4,
-        patch_size=64,
-        only_tumor=True,
-        whole_tumor=False,
-        drop_labels=3,
-        transform_spatial=True,
-        transform_elastic=False,
-        transform_rot90=True,
-        transform_mirror=True,
-        transform_gamma=True,
-        transform_noise=True,
-        transform_blur=True,
-        transform_brightness=True,
-        random_date_shift=(-100, 100),
-        normalize_date_factor=0.01,
-        n_processes=8,
+        data_dir: str,
+        batch_size: int = 128,
+        time_size: Iterable[int] = (2, 3, 4, 5),
+        dim: int = 2,
+        axis: int = 0,
+        split_N: int = 5,
+        seed: int = 1,
+        split_val: int = 3,
+        split_test: int = 4,
+        patch_size: int = 64,
+        only_tumor: bool = True,
+        whole_tumor: bool = False,
+        drop_labels: Optional[Union[int, Iterable[int]]] = 3,
+        transform_spatial: bool = True,
+        transform_elastic: bool = False,
+        transform_rot90: bool = True,
+        transform_mirror: bool = True,
+        transform_gamma: bool = True,
+        transform_noise: bool = True,
+        transform_blur: bool = True,
+        transform_brightness: bool = True,
+        random_date_shift: Iterable[float] = (-1.0, 1.0),
+        normalize_date_factor: float = 0.01,
+        n_processes: int = 8,
         **kwargs
     ):
         super().__init__(dims=dim)
@@ -783,7 +791,7 @@ class GliomaModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             time_size=self.time_size,
             axis=self.axis,
-            patch_size=self.patch_size,
+            patch_size=int(1.5 * self.patch_size),  # for SpatialTransform rotations
             only_tumor=self.only_tumor,
             whole_tumor=self.whole_tumor,
             ddir=self.data_dir,
@@ -893,6 +901,8 @@ class GliomaModule(pl.LightningDataModule):
         parser.add_argument("--transform_brightness", type=str2bool, default=True)
         parser.add_argument("--n_processes", type=int, default=8)
         parser.add_argument("--data_dir", type=str, required=True)
+        parser.add_argument("--normalize_date_factor", type=float, default=0.01)
+        parser.add_argument("--drop_labels", type=int, nargs="+", default=(3,))
 
         return parser
 

@@ -425,7 +425,7 @@ class VisdomLogger(LightningLoggerBase):
                     type(e)(e.message + m)
 
     @rank_zero_only
-    def log_graph(self, model: LightningModule, input_array: torch.tensor = None):
+    def log_graph(self, model: LightningModule, input_array: torch.Tensor = None):
         """Not implemented yet, only here for API completeness."""
         print("Visdom log_graph not implemented yet...")
 
@@ -528,7 +528,7 @@ def run_experiment(
         name:
             A name for the experiment. MLFlow will use this as the experiment name and
             args.name as the run name.
-        globs: globals().
+        globs: globals(). Will log source files if this is provided.
         callback_monitor: Monitor this metric for model checkpointing.
         callback_kwargs: ModelCheckpoint will be initialized with this.
 
@@ -545,7 +545,7 @@ def run_experiment(
         )
     ]
     if args.visdom:
-        loggers.append(VisdomLogger(name=args.name, port=args.visdom))
+        loggers.append(VisdomLogger(name=name, port=args.visdom))
     mlflow.start_run(run_id=loggers[0].run_id)
     if args.name != name:
         # illegal :)
@@ -563,6 +563,8 @@ def run_experiment(
             save_top_k=3,
             save_last=True,
             mode="min",
+            every_n_train_steps=None,
+            every_n_val_epochs=1,
         )
         default_callback_kwargs.update(callback_kwargs)
         checkpoint_callback = pl.callbacks.ModelCheckpoint(

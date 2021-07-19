@@ -66,11 +66,11 @@ class SegmentationProcess(nn.Module):
 
     def aggregate(
         self,
-        context_query: torch.tensor,
-        target_query: torch.tensor,
-        context_representation: Union[torch.tensor, Iterable[torch.tensor]],
-        target_representation: Union[torch.tensor, Iterable[torch.tensor], None] = None,
-    ) -> torch.tensor:
+        context_query: torch.Tensor,
+        target_query: torch.Tensor,
+        context_representation: Union[torch.Tensor, Iterable[torch.Tensor]],
+        target_representation: Union[torch.Tensor, Iterable[torch.Tensor], None] = None,
+    ) -> torch.Tensor:
         """
         Aggregate representations. This implementation averages along
         first axis.
@@ -135,10 +135,10 @@ class SegmentationProcess(nn.Module):
 
     def encode_context(
         self,
-        context_query: torch.tensor,
-        context_seg: torch.tensor,
-        context_image: Optional[torch.tensor] = None,
-    ) -> Union[torch.tensor, Iterable[torch.tensor]]:
+        context_query: torch.Tensor,
+        context_seg: torch.Tensor,
+        context_image: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Iterable[torch.Tensor]]:
         """
         Use the context encoder to encode a representation.
 
@@ -166,8 +166,8 @@ class SegmentationProcess(nn.Module):
         return output
 
     def encode_target(
-        self, target_query: torch.tensor, target_image: torch.tensor
-    ) -> Union[torch.tensor, Iterable[torch.tensor]]:
+        self, target_query: torch.Tensor, target_image: torch.Tensor
+    ) -> Union[torch.Tensor, Iterable[torch.Tensor]]:
         """
         Use the target encoder to encode a representation.
 
@@ -195,8 +195,8 @@ class SegmentationProcess(nn.Module):
         return output
 
     def decode(
-        self, representation: Union[torch.tensor, Iterable[torch.tensor]]
-    ) -> torch.tensor:
+        self, representation: Union[torch.Tensor, Iterable[torch.Tensor]]
+    ) -> torch.Tensor:
         """
         Decode an aggregated representation.
 
@@ -219,7 +219,7 @@ class SegmentationProcess(nn.Module):
         return unstack_batch(representation, B)
 
     def encode_prior(
-        self, representation: Union[torch.tensor, Iterable[torch.tensor]]
+        self, representation: Union[torch.Tensor, Iterable[torch.Tensor]]
     ) -> torch.distributions.Normal:
         """
         Encode prior from representations.
@@ -242,7 +242,7 @@ class SegmentationProcess(nn.Module):
         return prior
 
     def encode_posterior(
-        self, representation: Union[torch.tensor, Iterable[torch.tensor]]
+        self, representation: Union[torch.Tensor, Iterable[torch.Tensor]]
     ) -> torch.distributions.Normal:
         """
         Encode posterior from representations.
@@ -266,13 +266,13 @@ class SegmentationProcess(nn.Module):
 
     def forward(
         self,
-        context_query: torch.tensor,
-        context_seg: torch.tensor,
-        target_query: torch.tensor,
-        context_image: Optional[torch.tensor] = None,
-        target_image: Optional[torch.tensor] = None,
-        target_seg: Optional[torch.tensor] = None,
-    ) -> torch.tensor:
+        context_query: torch.Tensor,
+        context_seg: torch.Tensor,
+        target_query: torch.Tensor,
+        context_image: Optional[torch.Tensor] = None,
+        target_image: Optional[torch.Tensor] = None,
+        target_seg: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Forward pass in the Segmentation Process.
 
@@ -349,12 +349,12 @@ class SegmentationProcess(nn.Module):
     def sample(
         self,
         n_samples,
-        context_query: torch.tensor,
-        context_seg: torch.tensor,
-        target_query: torch.tensor,
-        context_image: Optional[torch.tensor] = None,
-        target_image: Optional[torch.tensor] = None,
-    ) -> torch.tensor:
+        context_query: torch.Tensor,
+        context_seg: torch.Tensor,
+        target_query: torch.Tensor,
+        context_image: Optional[torch.Tensor] = None,
+        target_image: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Sampling pass in the Segmentation Process.
 
@@ -523,7 +523,7 @@ class AttentiveSegmentationProcess(SegmentationProcess):
                 higher_level_attention_op(**higher_level_attention_kwargs),
             )
 
-    def optional_downsample(self, x: torch.tensor) -> Tuple[torch.Tensor, bool]:
+    def optional_downsample(self, x: torch.Tensor) -> Tuple[torch.Tensor, bool]:
         """
         Optionally downsample input, depending on configuration.
 
@@ -570,11 +570,11 @@ class AttentiveSegmentationProcess(SegmentationProcess):
 
     def aggregate(
         self,
-        context_query: torch.tensor,
-        target_query: torch.tensor,
-        context_representation: Union[torch.tensor, Iterable[torch.tensor]],
-        target_representation: Union[torch.tensor, Iterable[torch.tensor], None] = None,
-    ) -> Iterable[torch.tensor]:
+        context_query: torch.Tensor,
+        target_query: torch.Tensor,
+        context_representation: Union[torch.Tensor, Iterable[torch.Tensor]],
+        target_representation: Union[torch.Tensor, Iterable[torch.Tensor], None] = None,
+    ) -> Iterable[torch.Tensor]:
         """
         Aggregate representations. This implementation uses attention over queries/keys.
 

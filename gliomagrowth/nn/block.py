@@ -18,7 +18,7 @@ class ConcatCoords(nn.Module):
         super().__init__(**kwargs)
         self.centered = centered
 
-    def forward(self, input_: torch.tensor, batch_dims: int = 1) -> torch.tensor:
+    def forward(self, input_: torch.Tensor, batch_dims: int = 1) -> torch.Tensor:
         """Forward pass that concatenates coordinates to the input.
 
         Args:
@@ -282,8 +282,8 @@ class InjectionConvEncoder(ConvModule):
             )
 
     def forward(
-        self, x: torch.tensor, injection: Optional[torch.tensor] = None
-    ) -> torch.tensor:
+        self, x: torch.Tensor, injection: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Forward pass through encoder.
 
         Args:
@@ -322,8 +322,8 @@ class MultiOutputInjectionConvEncoder(InjectionConvEncoder):
         self.return_last = return_last
 
     def forward(
-        self, x: torch.tensor, injection: Optional[torch.tensor] = None
-    ) -> Union[torch.tensor, Iterable[torch.tensor]]:
+        self, x: torch.Tensor, injection: Optional[torch.Tensor] = None
+    ) -> Union[torch.Tensor, Iterable[torch.Tensor]]:
         """Forward pass through encoder.
 
         Args:
@@ -590,7 +590,7 @@ class MultiInputConvDecoder(ConvModule):
                 self.output_activation_op(**self.output_activation_kwargs),
             )
 
-    def forward(self, *inputs: torch.tensor) -> torch.tensor:
+    def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Decoder forward pass.
 
         Args:

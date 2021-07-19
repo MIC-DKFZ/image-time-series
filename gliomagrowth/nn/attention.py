@@ -78,8 +78,8 @@ class MultiheadAttention(nn.Module):
             self.cc_layer = ConcatCoords()
 
     def single_head(
-        self, query: torch.tensor, key: torch.tensor, value: torch.tensor
-    ) -> torch.tensor:
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
         """
         Execute a single attention head.
 
@@ -131,11 +131,11 @@ class MultiheadAttention(nn.Module):
 
     def forward(
         self,
-        query: torch.tensor,
-        key: torch.tensor,
-        value: torch.tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
         need_weights: bool = True,
-    ) -> Tuple[torch.tensor, Optional[torch.tensor]]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass through the attention mechanism.
 

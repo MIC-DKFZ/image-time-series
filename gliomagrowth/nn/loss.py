@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from typing import Union, Optional, Iterable
+from torch.distributions import Distribution, kl_divergence
+from typing import Union, Optional, Iterable, Type
 
 from gliomagrowth.util.util import make_onehot as make_onehot_segmentation
 
@@ -34,7 +35,7 @@ class FScoreLoss(nn.modules.loss._WeightedLoss):
         make_onehot: bool = False,
         make_onehot_newaxis: bool = False,
         ignore_index: Optional[Union[int, Iterable[int]]] = None,
-        weight: Optional[torch.tensor] = None,
+        weight: Optional[torch.Tensor] = None,
         reduction="mean",
         **kwargs
     ):
@@ -51,7 +52,7 @@ class FScoreLoss(nn.modules.loss._WeightedLoss):
                 ignore_index,
             ]
 
-    def forward(self, input_: torch.tensor, target: torch.tensor) -> torch.tensor:
+    def forward(self, input_: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Forward pass through the loss.
 
         Args:
@@ -96,8 +97,6 @@ class FScoreLoss(nn.modules.loss._WeightedLoss):
 
             if self.weight is not None:
 
-                if not torch.is_tensor(self.weight):
-                    self.weight = torch.tensor(self.weight)
                 self.weight = self.weight.float()
                 self.weight = self.weight.to(device=input_.device)
 
@@ -158,7 +157,7 @@ class CrossEntropyDiceLoss(DiceLoss):
         self.ce_weight = ce_weight
         self.ce = nn.NLLLoss(weight=kwargs.get("weight", None))
 
-    def forward(self, input_: torch.tensor, target: torch.tensor) -> torch.tensor:
+    def forward(self, input_: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Forward pass through the loss.
 
         Args:
@@ -188,3 +187,20 @@ class CrossEntropyDiceLoss(DiceLoss):
         ce = self.ce(torch.log(input_ + self.eps), target)
 
         return (1 - self.ce_weight) * dice + self.ce_weight * ce
+
+
+class KLDivergence(nn.modules.loss._Loss):
+    """Wraps torch.distributions.kl_divergence."""
+
+    def __call__(self, p: Distribution, q: Distribution) -> torch.Tensor:
+
+        kl = kl_divergence(p, q)
+
+        if self.reduction == "mean":
+            return kl.mean()
+        elif self.reduction == "sum":
+            return kl.sum()
+        elif self.reduction == "none":
+            return kl
+        else:
+            raise ValueError("Unknown reduction: {}".format(self.reduction))
