@@ -252,7 +252,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         merge_context_target: bool = False,
         drop_labels: Optional[Union[int, Iterable[int]]] = 3,
         normalize_date_factor: float = 0.01,
-        **kwargs
+        **kwargs,
     ):
 
         number_of_threads_in_multithreaded = kwargs.get(
@@ -490,7 +490,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
         *args,
         random_date_shift: Iterable[float] = (-1.0, 1.0),
         random_rotation: bool = True,
-        **kwargs
+        **kwargs,
     ):
 
         super(RandomFutureContextGenerator2D, self).__init__(*args, **kwargs)
@@ -699,6 +699,8 @@ class GliomaModule(pl.LightningDataModule):
         normalize_date_factor: Multiply date values by this to
             adjust value range. Original units are days, so we often get values >100.
         n_processes: Use this many processes in parallel for data augmentation.
+        validate_random: Use RandomFutureContextGenerator2D instead of
+            FutureContextGenerator2D for validation.
 
     """
 
@@ -728,7 +730,8 @@ class GliomaModule(pl.LightningDataModule):
         random_date_shift: Iterable[float] = (-1.0, 1.0),
         normalize_date_factor: float = 0.01,
         n_processes: int = 8,
-        **kwargs
+        validate_random: bool = True,
+        **kwargs,
     ):
         super().__init__(dims=dim)
 
@@ -765,6 +768,7 @@ class GliomaModule(pl.LightningDataModule):
         self.random_date_shift = random_date_shift
         self.normalize_date_factor = normalize_date_factor
         self.n_processes = n_processes
+        self.validate_random = validate_random
 
     def setup(self, stage: Optional[str] = None):
         """Initialize data split (without actually loading data).
@@ -835,8 +839,13 @@ class GliomaModule(pl.LightningDataModule):
     def val_dataloader(self) -> FutureContextGenerator2D:
         """Construct validation dataloader."""
 
+        if self.validate_random:
+            gen = RandomFutureContextGenerator2D
+        else:
+            gen = FutureContextGenerator2D
+
         val_data = load("r", subjects=self.subjects_val, ddir=self.data_dir)
-        val_gen = FutureContextGenerator2D(
+        val_gen = gen(
             data=val_data,
             batch_size=self.batch_size,
             time_size=self.time_size,
@@ -926,7 +935,7 @@ class GliomaModule(pl.LightningDataModule):
         *dataloaders: SlimDataLoaderBase,
         channel: int = 0,
         seg_cmap: Optional[mp.colors.Colormap] = mp.cm.viridis,
-        figsize: int = 2
+        figsize: int = 2,
     ) -> mp.figure.Figure:
         """Show examples from all dataloaders. Mainly for visual debugging.
 

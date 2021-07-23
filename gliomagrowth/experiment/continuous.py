@@ -1,12 +1,14 @@
 import argparse
 import os
 import sys
+import matplotlib
 import numpy as np
 import pandas as pd
 import torch
 from torch.optim import lr_scheduler
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
+import plotly.graph_objs as go
 from typing import Optional, Any, Tuple, Dict, Union, List, Iterable
 
 import gliomagrowth as gg
@@ -512,6 +514,193 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         return loss_total, log, log_tensor
 
+    def make_volumes_plot(
+        self,
+        context_query: torch.Tensor,
+        context_seg: torch.Tensor,
+        target_query: torch.Tensor,
+        context_image: torch.Tensor,
+        target_seg: torch.Tensor,
+        n_predictions: int = 50,
+        range_extend_factor: float = 0.1,
+        epoch: Optional[int] = None,
+        batch_idx: Optional[int] = None,
+        to_disk: bool = False,
+        subdir: Optional[str] = None,
+    ):
+        """Create a continuous volume plot.
+
+        We automatically select the first example from the batch
+
+        Args:
+            context_query: Context time values, (B, N, 1)
+            context_seg: Context segmentations, (B, N, Cs, ...)
+            target_query: Target time values, (B, M, 1)
+            context_image: Context inputs, (B, N, Ci, ...)
+            target_seg: Target segmentations, (B, M, Cs, ...)
+            n_predictions: Take this many points along the time axis.
+            range_extend_factor: We use the range of available queries to make
+                predictions. The range will be padded by this factor.
+            epoch: Prepends "epoch{epoch}_" to the name.
+            batch_idx: Prepends "step{batch_idx}_" to the name.
+            to_disk: Save to disk.
+            subdir: Optional subdirectory in logging folder.
+
+        """
+
+        spatial_axes = list(range(3, context_seg.ndim))
+
+        context_query = context_query[:1]
+        context_seg = context_seg[:1]
+        target_query = target_query[:1]
+        context_image = context_image[:1]
+        target_seg = target_seg[:1]
+        context_volumes = context_seg[:1, :, 1:].sum(spatial_axes)
+        target_volumes = target_seg[:1, :, 1:].sum(spatial_axes)
+        if self.hparams.reconstruct_context:
+            target_volumes = target_volumes[:, context_volumes.shape[1] :]
+            target_query = target_query[:, context_volumes.shape[1] :]
+
+        # make new input range
+        min_ = min(context_query.min().item(), target_query.min().item())
+        max_ = max(target_query.max().item(), target_query.max().item())
+        range_ = max_ - min_
+        queries = torch.linspace(
+            min_ - 0.1 * range_,
+            max_ + 0.1 * range_,
+            n_predictions,
+            dtype=target_query.dtype,
+            device=target_query.device,
+        )[None, :, None]
+
+        # make predictions, expect shape (1, n_predictions, Cs, ...)
+        prediction = self.model(
+            context_query=context_query,
+            context_seg=context_seg,
+            target_query=queries,
+            context_image=context_image,
+            target_image=None,
+            target_seg=None,
+        )
+        prediction = torch.argmax(prediction, 2, keepdim=True)
+        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=2)
+        predicted_volumes = prediction[:, :, 1:].sum(spatial_axes)
+
+        queries = queries.detach().cpu().numpy()
+        predicted_volumes = predicted_volumes.detach().cpu().numpy()
+        context_query = context_query.detach().cpu().numpy()
+        context_volumes = context_volumes.detach().cpu().numpy()
+        target_query = target_query.detach().cpu().numpy()
+        target_volumes = target_volumes.detach().cpu().numpy()
+
+        for logger in self.logger:
+            if isinstance(logger, VisdomLogger):
+
+                fig = go.Figure()
+
+                for c in range(predicted_volumes.shape[-1]):
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x=queries[0, :, 0],
+                            y=predicted_volumes[0, :, c],
+                            mode="lines",
+                            name="prediction_c" + str(c + 1),
+                            line=dict(color="black", width=1),
+                        )
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=context_query[0, :, 0],
+                            y=context_volumes[0, :, c],
+                            mode="markers",
+                            marker=dict(color="black", size=6),
+                            name="context_c" + str(c + 1),
+                        )
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=target_query[0, :, 0],
+                            y=target_volumes[0, :, c],
+                            mode="markers",
+                            marker=dict(color="black", size=6),
+                            marker_symbol="circle-open",
+                            name="target_c" + str(c + 1),
+                        )
+                    )
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=queries[0, :, 0],
+                        y=predicted_volumes[0].sum(-1),
+                        mode="lines",
+                        name="prediction_all",
+                        line=dict(color="blue", width=1),
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=context_query[0, :, 0],
+                        y=context_volumes[0].sum(-1),
+                        mode="markers",
+                        marker=dict(color="blue", size=6),
+                        name="context_all",
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=target_query[0, :, 0],
+                        y=target_volumes[0].sum(-1),
+                        mode="markers",
+                        marker=dict(color="blue", size=6),
+                        marker_symbol="circle-open",
+                        name="target_all",
+                    )
+                )
+
+                logger.experiment.plotlyplot(fig, "volumes")
+
+                del fig
+
+            if isinstance(logger, pl.loggers.MLFlowLogger):
+
+                format_ = "epoch{:0" + str(len(str(self.trainer.max_epochs))) + "d}_"
+                prefix = format_.format(self.current_epoch)
+                full_name = prefix + "samples"
+                if subdir is not None:
+                    full_name = os.path.join(subdir, full_name)
+
+                fig, ax = matplotlib.pyplot.subplots(1, 1)
+
+                for c in range(predicted_volumes.shape[-1]):
+
+                    ax.plot(queries[0, :, 0], predicted_volumes[0, :, c], "k-")
+                    ax.plot(
+                        context_query[0, :, 0], context_volumes[0, :, c], "ko", ms=6
+                    )
+                    ax.plot(
+                        target_query[0, :, 0],
+                        target_volumes[0, :, c],
+                        "ko",
+                        ms=6,
+                        markerfacecolor="none",
+                    )
+
+                ax.plot(queries[0, :, 0], predicted_volumes[0].sum(-1), "b-")
+                ax.plot(context_query[0, :, 0], context_volumes[0].sum(-1), "bo", ms=6)
+                ax.plot(
+                    target_query[0, :, 0],
+                    target_volumes[0].sum(-1),
+                    "bo",
+                    ms=6,
+                    markerfacecolor="none",
+                )
+
+                fp = os.path.join(self.trainer._default_root_dir, full_name + ".png")
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                matplotlib.pyplot.savefig(fp)
+                matplotlib.pyplot.close(fig)
+
     def log_tensor(
         self,
         tensor: torch.Tensor,
@@ -686,6 +875,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
         self.log_dict({"val_{}".format(k): v for k, v in log.items()})
 
         if return_all:
+
+            # regular images
             for key in ("context_image", "context_seg", "target_seg", "prediction"):
                 if key not in log_tensor:
                     continue
@@ -723,6 +914,45 @@ class ContinuousTumorGrowth(pl.LightningModule):
                             pad_value=1,
                             split_channels=False,
                         )
+
+            # samples
+            samples = self.model.sample(
+                8,
+                log_tensor["context_query"][:8],
+                log_tensor["context_seg"][:8],
+                log_tensor["target_query"][:8, -1:],
+                log_tensor["context_image"][:8],
+                None,
+            )
+            samples = torch.argmax(samples, 3, keepdim=True)
+            samples = stack_batch(samples)
+            self.log_tensor(
+                tensor=samples,
+                name="val_samples",
+                epoch=self.current_epoch,
+                batch_idx=batch_idx,
+                to_disk=True,
+                subdir="val",
+                nrow=8,
+                padding=2,
+                normalize=True,
+                range_=(0, self.hparams.num_classes - 1),
+                scale_each=False,
+                pad_value=1,
+                split_channels=False,
+            )
+
+            # volumes
+            self.make_volumes_plot(
+                log_tensor["context_query"],
+                log_tensor["context_seg"],
+                log_tensor["target_query"],
+                log_tensor["context_image"],
+                log_tensor["target_seg"],
+                epoch=self.current_epoch,
+                to_disk=True,
+                subdir="val",
+            )
 
         return loss
 
@@ -913,14 +1143,12 @@ if __name__ == "__main__":
     # select function type
     parser.add_argument("--data", type=str, default="glioma")
     temp_args, _ = parser.parse_known_args()
-    if temp_args.data == "glioma":
-        DataModule = gg.data.GliomaModule
-    else:
-        # try to find a module in gg.data.lightning that matches the name
-        module_name = temp_args.data.capitalize() + "Module"
-        DataModule = getattr(gg.data, module_name, None)
-        if DataModule is None:
-            raise ValueError("Unknown module type: {}".format(temp_args.data))
+
+    # try to find a module in gg.data.lightning that matches the name
+    module_name = temp_args.data.capitalize() + "Module"
+    DataModule = getattr(gg.data, module_name, None)
+    if DataModule is None:
+        raise ValueError("Unknown module type: {}".format(temp_args.data))
 
     # add parser args
     parser = DataModule.add_data_specific_args(parser)
