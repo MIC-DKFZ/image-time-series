@@ -566,8 +566,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
         max_ = max(target_query.max().item(), target_query.max().item())
         range_ = max_ - min_
         queries = torch.linspace(
-            min_ - 0.1 * range_,
-            max_ + 0.1 * range_,
+            min_ - range_extend_factor * range_,
+            max_ + range_extend_factor * range_,
             n_predictions,
             dtype=target_query.dtype,
             device=target_query.device,
@@ -658,48 +658,51 @@ class ContinuousTumorGrowth(pl.LightningModule):
                     )
                 )
 
-                logger.experiment.plotlyplot(fig, "volumes")
+                logger.experiment.plotlyplot(fig, "val_volumes")
 
                 del fig
 
-            if isinstance(logger, pl.loggers.MLFlowLogger):
+        if to_disk:
 
+            prefix = ""
+            if epoch is not None:
                 format_ = "epoch{:0" + str(len(str(self.trainer.max_epochs))) + "d}_"
-                prefix = format_.format(self.current_epoch)
-                full_name = prefix + "samples"
-                if subdir is not None:
-                    full_name = os.path.join(subdir, full_name)
+                prefix += format_.format(epoch)
+            if batch_idx is not None:
+                format_ = "step{}_"
+                prefix += format_.format(batch_idx)
+            full_name = prefix + "val_volumes"
+            if subdir is not None:
+                full_name = os.path.join(subdir, full_name)
 
-                fig, ax = matplotlib.pyplot.subplots(1, 1)
+            fig, ax = matplotlib.pyplot.subplots(1, 1)
 
-                for c in range(predicted_volumes.shape[-1]):
+            for c in range(predicted_volumes.shape[-1]):
 
-                    ax.plot(queries[0, :, 0], predicted_volumes[0, :, c], "k-")
-                    ax.plot(
-                        context_query[0, :, 0], context_volumes[0, :, c], "ko", ms=6
-                    )
-                    ax.plot(
-                        target_query[0, :, 0],
-                        target_volumes[0, :, c],
-                        "ko",
-                        ms=6,
-                        markerfacecolor="none",
-                    )
-
-                ax.plot(queries[0, :, 0], predicted_volumes[0].sum(-1), "b-")
-                ax.plot(context_query[0, :, 0], context_volumes[0].sum(-1), "bo", ms=6)
+                ax.plot(queries[0, :, 0], predicted_volumes[0, :, c], "k-")
+                ax.plot(context_query[0, :, 0], context_volumes[0, :, c], "ko", ms=6)
                 ax.plot(
                     target_query[0, :, 0],
-                    target_volumes[0].sum(-1),
-                    "bo",
+                    target_volumes[0, :, c],
+                    "ko",
                     ms=6,
                     markerfacecolor="none",
                 )
 
-                fp = os.path.join(self.trainer._default_root_dir, full_name + ".png")
-                os.makedirs(os.path.dirname(fp), exist_ok=True)
-                matplotlib.pyplot.savefig(fp)
-                matplotlib.pyplot.close(fig)
+            ax.plot(queries[0, :, 0], predicted_volumes[0].sum(-1), "b-")
+            ax.plot(context_query[0, :, 0], context_volumes[0].sum(-1), "bo", ms=6)
+            ax.plot(
+                target_query[0, :, 0],
+                target_volumes[0].sum(-1),
+                "bo",
+                ms=6,
+                markerfacecolor="none",
+            )
+
+            fp = os.path.join(self.trainer._default_root_dir, full_name + ".png")
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            matplotlib.pyplot.savefig(fp)
+            matplotlib.pyplot.close(fig)
 
     def log_tensor(
         self,
@@ -950,6 +953,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 log_tensor["context_image"],
                 log_tensor["target_seg"],
                 epoch=self.current_epoch,
+                batch_idx=batch_idx,
                 to_disk=True,
                 subdir="val",
             )
