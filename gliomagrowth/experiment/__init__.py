@@ -1,1 +1,1 @@
-from . import continuous
+from . import continuous_image
