@@ -11,7 +11,7 @@ from gliomagrowth.util.util import (
 )
 
 
-class SegmentationProcess(nn.Module):
+class ImageProcess(nn.Module):
     """
     A Neural Process, but the queries can simultaneously be image and vector valued.
 
@@ -431,8 +431,8 @@ class SegmentationProcess(nn.Module):
         return torch.stack(samples)
 
 
-class AttentiveSegmentationProcess(SegmentationProcess):
-    """SegmentationProcess that uses attention for aggregation.
+class AttentiveImageProcess(ImageProcess):
+    """ImageProcess that uses attention for aggregation.
 
     We're generally assuming representations at multiple scales/levels, otherwise the
     arguments wouldn't make much sense ;) If you provide fewer attention mechanisms than

@@ -27,7 +27,7 @@ from gliomagrowth.util.lightning import (
 from gliomagrowth.nn import loss as customloss
 from gliomagrowth.nn.block import MultiOutputInjectionConvEncoder, MultiInputConvDecoder
 from gliomagrowth.nn.attention import MultiheadAttention
-from gliomagrowth.nn.neuralprocess import AttentiveSegmentationProcess
+from gliomagrowth.nn.neuralprocess import AttentiveImageProcess
 from gliomagrowth.eval.metrics import dice
 
 
@@ -209,14 +209,14 @@ class ContinuousTumorGrowth(pl.LightningModule):
             return optimizer
 
     @staticmethod
-    def make_model(hparams: argparse.Namespace) -> AttentiveSegmentationProcess:
+    def make_model(hparams: argparse.Namespace) -> AttentiveImageProcess:
         """Construct model from hparams object.
 
         Args:
             hparams: mymodule.save_hyperparameters() -> mymodule.hparams
 
         Returns:
-            An instance of AttentiveSegmentationProcess.
+            An instance of AttentiveImageProcess.
 
         """
 
@@ -373,7 +373,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         )
 
         # put everything together
-        model_op = AttentiveSegmentationProcess
+        model_op = AttentiveImageProcess
         model_kwargs = dict(
             num_attention=hparams.model_spatial_attention,
             global_sum=hparams.model_global_sum,
