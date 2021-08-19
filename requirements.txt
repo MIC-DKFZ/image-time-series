@@ -2,6 +2,6 @@ numpy
 pandas
 torch
 torchvision
-pytorch_lightning
+pytorch_lightning>=1.4.0
 mlflow
 visdom

@@ -478,7 +478,7 @@ def make_default_parser() -> argparse.ArgumentParser:
 def log_model_summary(experiment: LightningModule):
     """Log a summary of a modules model in MLFlow."""
 
-    summary = str(pl.core.memory.ModelSummary(experiment, mode="full"))
+    summary = str(pl.core.memory.ModelSummary(experiment, max_depth=-1))
     tempdir = tempfile.mkdtemp()
     try:
         summary_file = os.path.join(tempdir, "model_summary.txt")
@@ -563,8 +563,9 @@ def run_experiment(
             save_top_k=3,
             save_last=True,
             mode="min",
-            every_n_train_steps=None,
-            every_n_val_epochs=1,
+            # every_n_train_steps=None,
+            # every_n_val_epochs=1,
+            every_n_epochs=1,
         )
         default_callback_kwargs.update(callback_kwargs)
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -584,13 +585,13 @@ def run_experiment(
 
     # log all hparams and model summary
     # MLFlow can only log 100 hparams at once...
-    hparam_dicts = []
-    for i, (key, val) in enumerate(experiment.hparams.items()):
-        if i % 100 == 0:
-            hparam_dicts.append({})
-        hparam_dicts[-1][key] = val
-    for hp in hparam_dicts:
-        mlflow.log_params(hp)
+    # hparam_dicts = []
+    # for i, (key, val) in enumerate(experiment.hparams.items()):
+    #     if i % 100 == 0:
+    #         hparam_dicts.append({})
+    #     hparam_dicts[-1][key] = val
+    # for hp in hparam_dicts:
+    #     mlflow.log_params(hp)
     mlflow.log_param("command", " ".join(sys.argv))
     log_model_summary(experiment)
 

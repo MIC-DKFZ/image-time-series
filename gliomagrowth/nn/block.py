@@ -198,35 +198,41 @@ class InjectionConvEncoder(ConvModule):
         self.feature_map_multiplier = feature_map_multiplier
 
         self.activation_op = activation_op
-        self.activation_kwargs = self._default_activation_kwargs.copy()
         if activation_kwargs is not None:
-            self.activation_kwargs.update(activation_kwargs)
+            self.activation_kwargs = activation_kwargs.copy()
+        else:
+            self.activation_kwargs = self._default_activation_kwargs.copy()
 
         self.norm_op = norm_op
-        self.norm_kwargs = self._default_norm_kwargs.copy()
         if norm_kwargs is not None:
-            self.norm_kwargs.update(norm_kwargs)
+            self.norm_kwargs = norm_kwargs.copy()
+        else:
+            self.norm_kwargs = self._default_norm_kwargs.copy()
         self.norm_depth = depth if norm_depth == "full" else norm_depth
 
         self.conv_op = conv_op
-        self.conv_kwargs = self._default_conv_kwargs.copy()
         if conv_kwargs is not None:
-            self.conv_kwargs.update(conv_kwargs)
-
-        self.pool_op = pool_op
-        self.pool_kwargs = self._default_pool_kwargs.copy()
-        if pool_kwargs is not None:
-            self.pool_kwargs.update(pool_kwargs)
+            self.conv_kwargs = conv_kwargs.copy()
+        else:
+            self.conv_kwargs = self._default_conv_kwargs.copy()
 
         self.dropout_op = dropout_op
-        self.dropout_kwargs = self._default_dropout_kwargs.copy()
         if dropout_kwargs is not None:
-            self.dropout_kwargs.update(dropout_kwargs)
+            self.dropout_kwargs = dropout_kwargs.copy()
+        else:
+            self.dropout_kwargs = self._default_dropout_kwargs.copy()
+
+        self.pool_op = pool_op
+        if pool_kwargs is not None:
+            self.pool_kwargs = pool_kwargs.copy()
+        else:
+            self.pool_kwargs = self._default_pool_kwargs.copy()
 
         self.global_pool_op = global_pool_op
-        self.global_pool_kwargs = self._default_global_pool_kwargs.copy()
         if global_pool_kwargs is not None:
-            self.global_pool_kwargs.update(global_pool_kwargs)
+            self.global_pool_kwargs = global_pool_kwargs.copy()
+        else:
+            self.global_pool_kwargs = self._default_global_pool_kwargs.copy()
 
         if not coords:
             self.coords = [
@@ -254,7 +260,14 @@ class InjectionConvEncoder(ConvModule):
 
             layers = []
             if d > 0:
-                layers.append(self.pool_op(**self.pool_kwargs))
+                if is_conv(self.pool_op):
+                    # strided conv or similar
+                    layers.append(
+                        self.pool_op(current_in, current_in, **self.pool_kwargs)
+                    )
+                else:
+                    # max/avg pool etc.
+                    layers.append(self.pool_op(**self.pool_kwargs))
             if self.coords[d]:
                 layers.append(ConcatCoords())
                 in_ += coords_dim
@@ -485,40 +498,49 @@ class MultiInputConvDecoder(ConvModule):
         self.feature_map_multiplier_backwards = feature_map_multiplier_backwards
 
         self.activation_op = activation_op
-        self.activation_kwargs = self._default_activation_kwargs.copy()
         if activation_kwargs is not None:
-            self.activation_kwargs.update(activation_kwargs)
+            self.activation_kwargs = activation_kwargs.copy()
+        else:
+            self.activation_kwargs = self._default_activation_kwargs.copy()
 
         self.norm_op = norm_op
-        self.norm_kwargs = self._default_norm_kwargs.copy()
         if norm_kwargs is not None:
-            self.norm_kwargs.update(norm_kwargs)
+            self.norm_kwargs = norm_kwargs.copy()
+        else:
+            self.norm_kwargs = self._default_norm_kwargs.copy()
         self.norm_depth = depth if norm_depth == "full" else norm_depth
 
         self.conv_op = conv_op
-        self.conv_kwargs = self._default_conv_kwargs.copy()
         if conv_kwargs is not None:
-            self.conv_kwargs.update(conv_kwargs)
+            self.conv_kwargs = conv_kwargs.copy()
+        else:
+            self.conv_kwargs = self._default_conv_kwargs.copy()
 
         self.upsample_op = upsample_op
-        self.upsample_kwargs = self._default_upsample_kwargs.copy()
         if upsample_kwargs is not None:
-            self.upsample_kwargs.update(upsample_kwargs)
+            self.upsample_kwargs = upsample_kwargs.copy()
+        else:
+            self.upsample_kwargs = self._default_upsample_kwargs.copy()
 
         self.dropout_op = dropout_op
-        self.dropout_kwargs = self._default_dropout_kwargs.copy()
         if dropout_kwargs is not None:
-            self.dropout_kwargs.update(dropout_kwargs)
+            self.dropout_kwargs = dropout_kwargs.copy()
+        else:
+            self.dropout_kwargs = self._default_dropout_kwargs.copy()
 
         self.initial_upsample_op = initial_upsample_op
-        self.initial_upsample_kwargs = self._default_initial_upsample_kwargs.copy()
         if initial_upsample_kwargs is not None:
-            self.initial_upsample_kwargs.update(initial_upsample_kwargs)
+            self.initial_upsample_kwargs = initial_upsample_kwargs.copy()
+        else:
+            self.initial_upsample_kwargs = self._default_initial_upsample_kwargs.copy()
 
         self.output_activation_op = output_activation_op
-        self.output_activation_kwargs = self._default_output_activation_kwargs.copy()
         if output_activation_kwargs is not None:
-            self.output_activation_kwargs.update(output_activation_kwargs)
+            self.output_activation_kwargs = output_activation_kwargs.copy()
+        else:
+            self.output_activation_kwargs = (
+                self._default_output_activation_kwargs.copy()
+            )
 
         if not coords:
             self.coords = [
@@ -533,10 +555,20 @@ class MultiInputConvDecoder(ConvModule):
         self.coords_dim = coords_dim
 
         if self.initial_upsample_op is not None:
-            self.add_module(
-                "initial_upsample",
-                self.initial_upsample_op(**self.initial_upsample_kwargs),
-            )
+            if is_conv(self.initial_upsample_op):
+                self.add_module(
+                    "initial_upsample",
+                    self.initial_upsample_op(
+                        self.in_channels[-1],
+                        self.in_channels[-1],
+                        **self.initial_upsample_kwargs
+                    ),
+                )
+            else:
+                self.add_module(
+                    "initial_upsample",
+                    self.initial_upsample_op(**self.initial_upsample_kwargs),
+                )
 
         for d in range(self.depth):
 
@@ -558,7 +590,10 @@ class MultiInputConvDecoder(ConvModule):
 
             layers = []
             if d > 0:
-                layers.append(self.upsample_op(**self.upsample_kwargs))
+                if is_conv(self.upsample_op):
+                    layers.append(self.upsample_op(in_, in_, **self.upsample_kwargs))
+                else:
+                    layers.append(self.upsample_op(**self.upsample_kwargs))
             if self.coords[d]:
                 layers.append(ConcatCoords())
                 in_ += coords_dim

@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 import torch
 from torch import nn
-from typing import Union, Iterable, Optional, Dict, Tuple, Type
+from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any
 from types import ModuleType
 
 
@@ -449,20 +449,36 @@ class NpzLazyDict(dict):
         return np.load(super().__getitem__(key))
 
 
-def is_conv(op: type) -> bool:
-    """Check if the input is one of the torch conv operators (or a subclass)."""
+def is_conv(
+    op: Union[type, Any], additional_types: Optional[Iterable[type]] = None
+) -> bool:
+    """Check if the input is one of the torch conv operators (or a subclass).
 
-    conv_types = (
+    Args:
+        op: Will check if this as a conv type or instance thereof.
+        additional_types: Let these types return True as well.
+
+    Returns:
+        Whether or not the input is a conv type.
+
+    """
+
+    conv_types = [
         nn.Conv1d,
         nn.Conv2d,
         nn.Conv3d,
         nn.ConvTranspose1d,
         nn.ConvTranspose2d,
         nn.ConvTranspose3d,
-    )
+    ]
+    if additional_types is not None:
+        if not hasattr(additional_types, "__iter__"):
+            additional_types = [additional_types]
+        conv_types += list(additional_types)
+    conv_types = tuple(conv_types)
     if type(op) == type and issubclass(op, conv_types):
         return True
-    elif type(op) in conv_types:
+    elif issubclass(type(op), conv_types):
         return True
     else:
         return False
@@ -573,3 +589,18 @@ def tensor_to_loc_scale(
         scale = torch.exp(0.5 * scale)
 
     return distribution(loc, scale)
+
+
+class StoreDictKeyPair(argparse.Action):
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        self._nargs = nargs
+        super(StoreDictKeyPair, self).__init__(
+            option_strings, dest, nargs=nargs, **kwargs
+        )
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        my_dict = {}
+        for kv in values:
+            k, v = kv.split("=")
+            my_dict[k] = v
+        setattr(namespace, self.dest, my_dict)

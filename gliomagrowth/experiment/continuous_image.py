@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import json
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ from gliomagrowth.util.util import (
     make_onehot,
     stack_batch,
     transformable_to_ct,
+    StoreDictKeyPair,
 )
 from gliomagrowth.util.lightning import (
     VisdomLogger,
@@ -48,12 +50,11 @@ class ContinuousTumorGrowth(pl.LightningModule):
         num_classes: Number of classes in background, including background.
         dim: Either 2 or 3.
         reconstruct_context: Also reconstruct the context observations. Recommended!
-        variational: Make the model variational. Set model_global_sum if you do this.
         criterion_task: Loss for the output predictions.
         criterion_task_reduction: Reduction argument for criterion_task.
         criterion_task_onehot: Activate this if the target segmentation needs to be
             onehot encoded.
-        criterion_latent: Loss for the latent space. Only used when variational as on.
+        criterion_latent: Loss for the latent space.
         criterion_latent_reduction: Reduction argument for latent loss.
         criterion_latent_weight: Weight for latent loss.
         optimizer: All modules are wrapped into one object and use the same optimizer.
@@ -95,8 +96,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
         model_pool_kwargs: Initialization arguments for pooling.
         model_upsample: Upsampling operator.
         model_upsample_kwargs: Initialization arguments for upsampling.
+        model_initial_upsample: Initial upsampling operator.
         model_initial_upsample_kwargs: Initialization arguments for initial upsampling.
-            Also uses model_upsample as operator.
         model_dropout: Dropout operator.
         model_dropout_kwargs: Initialization arguments for dropout.
         model_global_pool: Global pooling operator. Applied before last encoder output.
@@ -114,7 +115,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
         num_classes: int = 3,  # incl. background
         dim: int = 2,
         reconstruct_context: bool = True,
-        variational: bool = True,
         criterion_task: str = "crossentropydiceloss",
         criterion_task_reduction: str = "mean",
         criterion_task_onehot: str = True,
@@ -150,6 +150,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         model_pool_kwargs: Optional[dict] = None,
         model_upsample: str = "upsample",
         model_upsample_kwargs: Optional[dict] = None,
+        model_initial_upsample: str = "upsample",
         model_initial_upsample_kwargs: Optional[dict] = None,
         model_dropout: Optional[str] = None,
         model_dropout_kwargs: Optional[dict] = None,
@@ -167,14 +168,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         self.criterion_task = nn_module_lookup(criterion_task, dim, customloss)(
             reduction=self.hparams.criterion_task_reduction
         )
-        # # weights hack so we can resume
-        # self.criterion_task.weight = torch.tensor((1,) * num_classes).to(
-        #     self.device, torch.float
-        # )
-        if variational:
-            self.criterion_latent = nn_module_lookup(
-                criterion_latent, dim, customloss
-            )()
+        self.criterion_latent = nn_module_lookup(criterion_latent, dim, customloss)()
 
         self.learning_rate = self.hparams.learning_rate
 
@@ -241,6 +235,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
         norm_op = nn_module_lookup(hparams.model_norm, hparams.dim)
         pool_op = nn_module_lookup(hparams.model_pool, hparams.dim)
         upsample_op = nn_module_lookup(hparams.model_upsample, hparams.dim)
+        initial_upsample_op = nn_module_lookup(
+            hparams.model_initial_upsample, hparams.dim
+        )
         global_pool_op = nn_module_lookup(hparams.model_global_pool, hparams.dim)
         dropout_op = (
             nn_module_lookup("dropout", hparams.dim) if hparams.model_dropout else None
@@ -260,8 +257,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             in_channels=1
             + hparams.num_classes
             + int(hparams.use_images) * hparams.in_channels,
-            out_channels=(1 + int(hparams.variational))
-            * hparams.representation_channels,
+            out_channels=2 * hparams.representation_channels,
             depth=hparams.model_depth,
             block_depth=hparams.model_block_depth,
             num_feature_maps=hparams.model_feature_maps,
@@ -325,7 +321,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             upsample_kwargs=hparams.model_upsample_kwargs,
             dropout_op=dropout_op,
             dropout_kwargs=hparams.model_dropout_kwargs,
-            initial_upsample_op=upsample_op,
+            initial_upsample_op=initial_upsample_op,
             initial_upsample_kwargs=initial_upsample_kwargs,
             output_activation_op=output_activation_op,
             output_activation_kwargs=hparams.model_output_activation_kwargs,
@@ -380,7 +376,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             scaleup_query=True,
             downsample=False,
             upsample=False,
-            variational=hparams.variational,
+            variational=True,
             higher_level_attention_op=attention_op
             if hparams.model_temporal_attention > 0
             else None,
@@ -478,24 +474,18 @@ class ContinuousTumorGrowth(pl.LightningModule):
             )
         log = {"loss_task": loss_task}
 
-        # latent loss
-        if self.hparams.variational:
-            # during validation we need to manually encode the posterior
-            if not self.training:
-                _ = self.model.encode_posterior(
-                    self.model.encode_context(target_query, target_seg, target_image)
-                )
-
-            loss_latent = (
-                self.criterion_latent(self.model.posterior, self.model.prior)
-                .mean(0)
-                .sum()
+        # during validation we need to manually encode the posterior
+        if not self.training:
+            _ = self.model.encode_posterior(
+                self.model.encode_context(target_query, target_seg, target_image)
             )
-            loss_total = loss_task + self.hparams.criterion_latent_weight * loss_latent
-            log["loss_latent"] = loss_latent
-            log["loss_total"] = loss_total
-        else:
-            loss_total = loss_task
+
+        loss_latent = (
+            self.criterion_latent(self.model.posterior, self.model.prior).mean(0).sum()
+        )
+        loss_total = loss_task + self.hparams.criterion_latent_weight * loss_latent
+        log["loss_latent"] = loss_latent
+        log["loss_total"] = loss_total
 
         # doesn't hurt to monitor memory usage
         log["gpu_memory"] = torch.cuda.max_memory_allocated() // (1024 ** 2)
@@ -1086,7 +1076,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
         arr = arr.set_index("Subject and Timestep")
         arr.to_csv(os.path.join(self.trainer._default_root_dir, "test.csv"))
 
-        return arr.mean().to_dict()
+        arr = arr.mean().to_dict()
+
+        self.log_dict(arr, logger=False)
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -1114,7 +1106,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--in_channels", type=int, default=4)
         parser.add_argument("--num_classes", type=int, default=3)
         parser.add_argument("--dim", type=int, default=2)
-        parser.add_argument("--variational", type=str2bool, default=True)
         parser.add_argument("--criterion_latent_weight", type=float, default=0.1)
         parser.add_argument("--representation_channels", type=int, default=128)
         parser.add_argument("--model_spatial_attention", type=int, default=2)
@@ -1124,11 +1115,25 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--model_depth", type=int, default=5)
         parser.add_argument("--model_feature_maps", type=int, default=24)
         parser.add_argument("--model_activation", type=str, default="leakyrelu")
+        parser.add_argument("--model_activation_kwargs", type=json.loads, default=None)
         parser.add_argument("--model_output_activation", type=str, default="softmax")
+        parser.add_argument(
+            "--model_output_activation_kwargs", type=json.loads, default=None
+        )
+        parser.add_argument("--model_upsample", type=str, default="upsample")
+        parser.add_argument("--model_upsample_kwargs", type=json.loads, default=None)
+        parser.add_argument("--model_initial_upsample", type=str, default="upsample")
+        parser.add_argument(
+            "--model_initial_upsample_kwargs", type=json.loads, default=None
+        )
         parser.add_argument("--model_norm", type=str, default="instancenorm")
+        parser.add_argument("--model_norm_kwargs", type=json.loads, default=None)
         parser.add_argument("--model_norm_depth", type=int, default=1)
         parser.add_argument("--model_norm_depth_decoder", type=int, default=0)
+        parser.add_argument("--model_pool", type=str, default="avgpool")
+        parser.add_argument("--model_pool_kwargs", type=json.loads, default=None)
         parser.add_argument("--model_dropout", type=str, default=None)
+        parser.add_argument("--model_dropout_kwargs", type=json.loads, default=None)
         parser.add_argument("--test_dice_samples", type=int, default=100)
 
         return parser
