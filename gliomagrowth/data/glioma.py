@@ -26,11 +26,11 @@ from batchgenerators.transforms.spatial_transforms import Rot90Transform
 
 from gliomagrowth.util.util import (
     modify_bbox,
-    str2bool,
     transformable_to_ct,
     ct_to_transformable,
     NpzLazyDict,
 )
+from gliomagrowth.util.lightning import str2bool
 
 # set a default data_dir for convenience
 data_dir = "/media/jens/SSD/bovarec/multi"

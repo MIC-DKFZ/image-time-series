@@ -4,6 +4,7 @@ import subprocess
 import subprocess as subp
 import sys
 import argparse
+import json
 from typing import Any, Dict, Optional, Union, Tuple, List
 from types import ModuleType
 from collections import defaultdict
@@ -473,6 +474,56 @@ def make_default_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def str2bool(v: Union[bool, str]) -> bool:
+    """Use this as the type for an ArgumentParser argument.
+
+    Allows you to do --my_flag false and similar, so the flag name can be positive,
+    regardless of the default value.
+
+    Args:
+        v: The parsed value.
+
+    Returns:
+        v interpreted as a boolean.
+
+    """
+
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+class DictArgument(argparse.Action):
+    """Custom action to allow dictionary CLI inputs.
+
+    Use with `action=DictArgument` and `nargs="+"` to allow user inputs like::
+
+        --my_dict a=b c=0.1
+
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        my_dict = {}
+        for kv in values:
+            k, v = kv.split("=")
+            try:
+                kv = json.loads("{" + '"{}":{}'.format(k, v) + "}")
+            except json.decoder.JSONDecodeError:
+                try:
+                    kv = json.loads("{" + '"{}":"{}"'.format(k, v) + "}")
+                except Exception as e:
+                    raise e
+            except Exception as e:
+                raise e
+            my_dict.update(kv)
+        setattr(namespace, self.dest, my_dict)
 
 
 def log_model_summary(experiment: LightningModule):

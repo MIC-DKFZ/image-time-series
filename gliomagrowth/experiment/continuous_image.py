@@ -15,16 +15,16 @@ from typing import Optional, Any, Tuple, Dict, Union, List, Iterable
 import gliomagrowth as gg
 from gliomagrowth.util.util import (
     nn_module_lookup,
-    str2bool,
     make_onehot,
     stack_batch,
     transformable_to_ct,
-    StoreDictKeyPair,
 )
 from gliomagrowth.util.lightning import (
     VisdomLogger,
     make_default_parser,
     run_experiment,
+    str2bool,
+    DictArgument,
 )
 from gliomagrowth.nn import loss as customloss
 from gliomagrowth.nn.block import MultiOutputInjectionConvEncoder, MultiInputConvDecoder
@@ -1115,25 +1115,41 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--model_depth", type=int, default=5)
         parser.add_argument("--model_feature_maps", type=int, default=24)
         parser.add_argument("--model_activation", type=str, default="leakyrelu")
-        parser.add_argument("--model_activation_kwargs", type=json.loads, default=None)
+        parser.add_argument(
+            "--model_activation_kwargs", action=DictArgument, nargs="+", default=None
+        )
         parser.add_argument("--model_output_activation", type=str, default="softmax")
         parser.add_argument(
-            "--model_output_activation_kwargs", type=json.loads, default=None
+            "--model_output_activation_kwargs",
+            action=DictArgument,
+            nargs="+",
+            default=None,
         )
         parser.add_argument("--model_upsample", type=str, default="upsample")
-        parser.add_argument("--model_upsample_kwargs", type=json.loads, default=None)
+        parser.add_argument(
+            "--model_upsample_kwargs", action=DictArgument, nargs="+", default=None
+        )
         parser.add_argument("--model_initial_upsample", type=str, default="upsample")
         parser.add_argument(
-            "--model_initial_upsample_kwargs", type=json.loads, default=None
+            "--model_initial_upsample_kwargs",
+            action=DictArgument,
+            nargs="+",
+            default=None,
         )
         parser.add_argument("--model_norm", type=str, default="instancenorm")
-        parser.add_argument("--model_norm_kwargs", type=json.loads, default=None)
+        parser.add_argument(
+            "--model_norm_kwargs", action=DictArgument, nargs="+", default=None
+        )
         parser.add_argument("--model_norm_depth", type=int, default=1)
         parser.add_argument("--model_norm_depth_decoder", type=int, default=0)
         parser.add_argument("--model_pool", type=str, default="avgpool")
-        parser.add_argument("--model_pool_kwargs", type=json.loads, default=None)
+        parser.add_argument(
+            "--model_pool_kwargs", action=DictArgument, nargs="+", default=None
+        )
         parser.add_argument("--model_dropout", type=str, default=None)
-        parser.add_argument("--model_dropout_kwargs", type=json.loads, default=None)
+        parser.add_argument(
+            "--model_dropout_kwargs", action=DictArgument, nargs="+", default=None
+        )
         parser.add_argument("--test_dice_samples", type=int, default=100)
 
         return parser

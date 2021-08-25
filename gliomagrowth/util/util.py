@@ -1,33 +1,8 @@
-import argparse
 import numpy as np
 import torch
 from torch import nn
 from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any
 from types import ModuleType
-
-
-def str2bool(v: Union[bool, str]) -> bool:
-    """Use this as the type for an ArgumentParser argument.
-
-    Allows you to do --my_flag false and similar, so the flag name can be positive,
-    regardless of the default value.
-
-    Args:
-        v: The parsed value.
-
-    Returns:
-        v interpreted as a boolean.
-
-    """
-
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ("yes", "true", "t", "y", "1"):
-        return True
-    elif v.lower() in ("no", "false", "f", "n", "0"):
-        return False
-    else:
-        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def nn_module_lookup(
@@ -589,18 +564,3 @@ def tensor_to_loc_scale(
         scale = torch.exp(0.5 * scale)
 
     return distribution(loc, scale)
-
-
-class StoreDictKeyPair(argparse.Action):
-    def __init__(self, option_strings, dest, nargs=None, **kwargs):
-        self._nargs = nargs
-        super(StoreDictKeyPair, self).__init__(
-            option_strings, dest, nargs=nargs, **kwargs
-        )
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        my_dict = {}
-        for kv in values:
-            k, v = kv.split("=")
-            my_dict[k] = v
-        setattr(namespace, self.dest, my_dict)
