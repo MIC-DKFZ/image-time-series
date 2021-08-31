@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from typing import Optional, Iterable, Union, Type, Tuple
+import warnings
 
 from gliomagrowth.util.util import (
     match_shapes,
@@ -19,7 +20,8 @@ class ImageProcess(nn.Module):
     MultiOutputInjectionConvEncoder and MultiInputConvDecoder.
 
     Args:
-        context_encoder_op: Encoder for the context.
+        context_encoder_op: Encoder for the context. This is also the prior encoder
+            in a variational model.
         decoder_op: Decoder. Make sure the
             decoder accommodates the correct input size depending on
             availability of context and target representations.
@@ -28,7 +30,12 @@ class ImageProcess(nn.Module):
         context_encoder_kwargs: Instantiate context_encoder_op with this.
         decoder_kwargs: Instantiate decoder_op with this.
         target_encoder_kwargs: Instantiate target_encoder_op with this.
-
+        variational: Make the model variational.
+        posterior_encoder_op: Encoder for the posterior. You need this if you want to
+            have different contexts and targets, e.g. when you only have queries and
+            images in the context, but want to predict target segmentations.
+            Will automatically be used if provided.
+        posterior_encoder_kwargs: Instantiate posterior_encoder_op with this.
 
     """
 
@@ -41,6 +48,8 @@ class ImageProcess(nn.Module):
         decoder_kwargs: Optional[dict] = None,
         target_encoder_kwargs: Optional[dict] = None,
         variational: bool = False,
+        posterior_encoder_op: Optional[Type[nn.Module]] = None,
+        posterior_encoder_kwargs: Optional[dict] = None,
         *args,
         **kwargs
     ):
@@ -59,6 +68,16 @@ class ImageProcess(nn.Module):
             if target_encoder_kwargs is None:
                 target_encoder_kwargs = {}
             self.target_encoder = target_encoder_op(**target_encoder_kwargs)
+
+        if posterior_encoder_op is not None:
+            if posterior_encoder_kwargs is None:
+                posterior_encoder_kwargs = {}
+            self.posterior_encoder = posterior_encoder_op(**posterior_encoder_kwargs)
+            if not variational:
+                warnings.warn(
+                    "Constructed posterior encoder, but the model is deterministic,\
+                    so it won't be used."
+                )
 
         self.variational = variational
         self.posterior = None
@@ -136,29 +155,40 @@ class ImageProcess(nn.Module):
     def encode_context(
         self,
         context_query: torch.Tensor,
-        context_seg: torch.Tensor,
         context_image: Optional[torch.Tensor] = None,
+        context_seg: Optional[torch.Tensor] = None,
+        encoder: Optional[nn.Module] = None,
     ) -> Union[torch.Tensor, Iterable[torch.Tensor]]:
         """
-        Use the context encoder to encode a representation.
+        Use the context encoder (or a provided one) to encode a representation.
 
         Args:
             context_query: Shape (B, N, Cq)
-            context_seg: Shape (B, N, Cs, ...)
-            context_image: Shape (B, N, Cimg, ...)
+            context_image: Shape (B, N, Cimg, ...). Note that either context_image or
+                context_seg must be different from None.
+            context_seg: Shape (B, N, Cs, ...). Note that either context_image or
+                context_seg must be different from None.
+            encoder: An encoder module. If None, this defaults to self.context_encoder.
+                This functionality is mainly here so we can also use the code for
+                posterior encoding.
 
         Returns:
             Shape (B, N, Cr, ...). Can also be a list!
 
         """
 
+        if context_image is None and context_seg is None:
+            raise ValueError("context_image and context_seg must not both be None!")
+        if encoder is None:
+            encoder = self.context_encoder
+
         B = context_query.shape[0]
 
         input_ = torch.cat(
-            match_shapes(context_query, context_seg, context_image, ignore_axes=2), 2
+            match_shapes(context_query, context_image, context_seg, ignore_axes=2), 2
         )
         input_ = stack_batch(input_)
-        output = self.context_encoder(input_)
+        output = encoder(input_)
         if torch.is_tensor(output):
             output = unstack_batch(output, B)
         else:
@@ -181,7 +211,7 @@ class ImageProcess(nn.Module):
         """
 
         if self.target_encoder is None:
-            raise ValueError("target_encoder is None, so we can't encode anything!")
+            raise AttributeError("target_encoder is None, so we can't encode anything!")
 
         B = target_query.shape[0]
 
@@ -219,13 +249,16 @@ class ImageProcess(nn.Module):
         return unstack_batch(representation, B)
 
     def encode_prior(
-        self, representation: Union[torch.Tensor, Iterable[torch.Tensor]]
+        self,
+        representation: Union[torch.Tensor, Iterable[torch.Tensor]],
+        save: bool = True,
     ) -> torch.distributions.Normal:
         """
         Encode prior from representations.
 
         Args:
             representation: Sequence or tensor, shape (B, N, C, ...)
+            save: Save the prior in self.prior
 
         Returns:
             The prior, which is also saved in self.prior
@@ -237,21 +270,26 @@ class ImageProcess(nn.Module):
             prior = representation[-1]
         prior = prior.mean(1, keepdim=True)
         prior = tensor_to_loc_scale(prior, torch.distributions.Normal, axis=2)
-        self.prior = prior
+        if save:
+            self.prior = prior
 
         return prior
 
     def encode_posterior(
-        self, representation: Union[torch.Tensor, Iterable[torch.Tensor]]
+        self,
+        representation: Union[torch.Tensor, Iterable[torch.Tensor]],
+        save: bool = True,
     ) -> torch.distributions.Normal:
         """
         Encode posterior from representations.
 
         Args:
             representation: Sequence or tensor, shape (B, N, C, ...)
+            save: Save the prior in self.prior
 
         Returns:
             The posterior, which is also saved in self.posterior
+
         """
 
         if torch.is_tensor(representation):
@@ -260,16 +298,17 @@ class ImageProcess(nn.Module):
             posterior = representation[-1]
         posterior = posterior.mean(1, keepdim=True)
         posterior = tensor_to_loc_scale(posterior, torch.distributions.Normal, axis=2)
-        self.posterior = posterior
+        if save:
+            self.posterior = posterior
 
         return posterior
 
     def forward(
         self,
         context_query: torch.Tensor,
-        context_seg: torch.Tensor,
         target_query: torch.Tensor,
         context_image: Optional[torch.Tensor] = None,
+        context_seg: Optional[torch.Tensor] = None,
         target_image: Optional[torch.Tensor] = None,
         target_seg: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -278,9 +317,11 @@ class ImageProcess(nn.Module):
 
         Args:
             context_query: Shape (B, N, Cq).
-            context_seg: Shape (B, N, Cs, ...).
             target_query: Shape (B, M, Cq).
-            context_image: Shape (B, N, Cimg, ...).
+            context_image: Shape (B, N, Cimg, ...). Note that either context_image or
+                context_seg must be different from None.
+            context_seg: Shape (B, N, Cs, ...). Note that either context_image or
+                context_seg must be different from None.
             target_image: Shape (B, M, Cimg, ...).
             target_seg: Shape (B, M, Cs, ...).
 
@@ -292,7 +333,7 @@ class ImageProcess(nn.Module):
         # encode context
         # returns a tuple of tensors with shape (B, N, Ci, ...)
         context_representation = self.encode_context(
-            context_query, context_seg, context_image
+            context_query, context_image, context_seg
         )
 
         # encode target if there's something to encode
@@ -313,9 +354,11 @@ class ImageProcess(nn.Module):
                         "target_seg must not be None for training in variational mode."
                     )
 
-                posterior = self.encode_posterior(
-                    self.encode_context(target_query, target_seg, target_image)
+                encoder = getattr(self, "posterior_encoder", None)
+                posterior = self.encode_context(
+                    target_query, target_image, target_seg, encoder=encoder
                 )
+                posterior = self.encode_posterior(posterior)
                 sample = posterior.rsample()
 
             else:
@@ -350,9 +393,9 @@ class ImageProcess(nn.Module):
         self,
         n_samples,
         context_query: torch.Tensor,
-        context_seg: torch.Tensor,
         target_query: torch.Tensor,
         context_image: Optional[torch.Tensor] = None,
+        context_seg: Optional[torch.Tensor] = None,
         target_image: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
@@ -360,9 +403,11 @@ class ImageProcess(nn.Module):
 
         Args:
             context_query: Shape (B, N, Cq).
-            context_seg: Shape (B, N, Cs, ...).
             target_query: Shape (B, M, Cq).
-            context_image: Shape (B, N, Cimg, ...).
+            context_image: Shape (B, N, Cimg, ...). Note that either context_image or
+                context_seg must be different from None.
+            context_seg: Shape (B, N, Cs, ...). Note that either context_image or
+                context_seg must be different from None.
             target_image: Shape (B, M, Cimg, ...).
 
         Returns:
@@ -371,12 +416,12 @@ class ImageProcess(nn.Module):
         """
 
         if not self.variational:
-            raise ValueError("Can only sample in variational mode.")
+            raise AttributeError("Can only sample in variational mode.")
 
         # encode context
         # returns a tuple of tensors with shape (B, N, Ci, ...)
         context_representation = self.encode_context(
-            context_query, context_seg, context_image
+            context_query, context_image, context_seg
         )
 
         # encode target if there's something to encode
@@ -386,12 +431,7 @@ class ImageProcess(nn.Module):
         else:
             target_representation = None
 
-        if torch.is_tensor(context_representation):
-            prior = context_representation
-        else:
-            prior = context_representation[-1]
-        prior = prior.mean(1, keepdim=True)
-        prior = tensor_to_loc_scale(prior, torch.distributions.Normal, axis=2)
+        prior = self.encode_prior(context_representation, save=False)
 
         samples = []
         while len(samples) < n_samples:

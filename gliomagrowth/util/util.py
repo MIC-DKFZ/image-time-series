@@ -512,6 +512,12 @@ def match_shapes(
 
     args = list(filter(lambda x: x is not None, args))
 
+    # exit early if possible
+    if len(args) == 1:
+        return tuple(args)
+    elif len(args) == 0:
+        raise ValueError("All input tensors are None!")
+
     dims = [a.ndim for a in args]
     target_dim = max(dims)
     for a, arr in enumerate(args):

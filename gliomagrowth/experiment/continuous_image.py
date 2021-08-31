@@ -111,6 +111,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
     def __init__(
         self,
         use_images: bool = True,
+        use_context_seg: bool = True,
         in_channels: int = 4,  # image channels
         num_classes: int = 3,  # incl. background
         dim: int = 2,
@@ -255,7 +256,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             + hparams.model_spatial_attention
             + hparams.model_temporal_attention,
             in_channels=1
-            + hparams.num_classes
+            + int(hparams.use_context_seg) * hparams.num_classes
             + int(hparams.use_images) * hparams.in_channels,
             out_channels=2 * hparams.representation_channels,
             depth=hparams.model_depth,
@@ -329,6 +330,39 @@ class ContinuousTumorGrowth(pl.LightningModule):
             coords_dim=hparams.dim,
         )
 
+        # configure posterior encoder if necessary
+        if not hparams.use_context_seg:
+            posterior_encoder_op = MultiOutputInjectionConvEncoder
+            posterior_encoder_kwargs = dict(
+                return_last=1
+                + hparams.model_spatial_attention
+                + hparams.model_temporal_attention,
+                in_channels=1 + hparams.num_classes + hparams.in_channels,
+                out_channels=2 * hparams.representation_channels,
+                depth=hparams.model_depth,
+                block_depth=hparams.model_block_depth,
+                num_feature_maps=hparams.model_feature_maps,
+                feature_map_multiplier=hparams.model_feature_map_multiplier,
+                activation_op=activation_op,
+                activation_kwargs=hparams.model_activation_kwargs,
+                norm_op=norm_op,
+                norm_kwargs=hparams.model_norm_kwargs,
+                norm_depth=hparams.model_norm_depth,
+                conv_op=conv_op,
+                conv_kwargs=None,
+                pool_op=pool_op,
+                pool_kwargs=hparams.model_pool_kwargs,
+                dropout_op=dropout_op,
+                dropout_kwargs=hparams.model_dropout_kwargs,
+                global_pool_op=global_pool_op,
+                global_pool_kwargs=hparams.model_global_pool_kwargs,
+                coords=hparams.model_use_coords,
+                coords_dim=hparams.dim,
+            )
+        else:
+            posterior_encoder_op = None
+            posterior_encoder_kwargs = None
+
         # configure attention
         kdim = [hparams.representation_channels + 1]
         vdim = [hparams.representation_channels + 1]
@@ -389,6 +423,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
             decoder_kwargs=decoder_kwargs,
             attention_op=attention_op,
             attention_kwargs=attention_kwargs,
+            posterior_encoder_op=posterior_encoder_op,
+            posterior_encoder_kwargs=posterior_encoder_kwargs,
         )
 
         return model_op(**model_kwargs)
@@ -449,9 +485,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         prediction = self.model(
             context_query=context_query,
-            context_seg=context_seg,
             target_query=target_query,
             context_image=context_image,
+            context_seg=context_seg if self.hparams.use_context_seg else None,
             target_image=target_image,
             target_seg=target_seg,
         )
@@ -477,7 +513,12 @@ class ContinuousTumorGrowth(pl.LightningModule):
         # during validation we need to manually encode the posterior
         if not self.training:
             _ = self.model.encode_posterior(
-                self.model.encode_context(target_query, target_seg, target_image)
+                self.model.encode_context(
+                    target_query,
+                    target_image,
+                    target_seg,
+                    encoder=getattr(self.model, "posterior_encoder", None),
+                )
             )
 
         loss_latent = (
@@ -566,9 +607,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
         # make predictions, expect shape (1, n_predictions, Cs, ...)
         prediction = self.model(
             context_query=context_query,
-            context_seg=context_seg,
             target_query=queries,
             context_image=context_image,
+            context_seg=context_seg if self.hparams.use_context_seg else None,
             target_image=None,
             target_seg=None,
         )
@@ -912,9 +953,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
             samples = self.model.sample(
                 8,
                 log_tensor["context_query"][:8],
-                log_tensor["context_seg"][:8],
                 log_tensor["target_query"][:8, -1:],
                 log_tensor["context_image"][:8],
+                log_tensor["context_seg"][:8] if self.hparams.use_context_seg else None,
                 None,
             )
             samples = torch.argmax(samples, 3, keepdim=True)
@@ -989,9 +1030,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
         samples = self.model.sample(
             self.hparams.test_dice_samples,
             log_tensor["context_query"],
-            log_tensor["context_seg"],
             log_tensor["target_query"][:, -1:],
             log_tensor["context_image"],
+            log_tensor["context_seg"] if self.hparams.use_context_seg else None,
             None,
         )[:, 0, -1]
         samples = torch.argmax(samples, 1, keepdim=True)
@@ -1088,6 +1129,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         )
 
         parser.add_argument("--use_images", type=str2bool, default=True)
+        parser.add_argument("--use_context_seg", type=str2bool, default=True)
         parser.add_argument("--reconstruct_context", type=str2bool, default=True)
         parser.add_argument(
             "--criterion_task", type=str, default="crossentropydiceloss"
