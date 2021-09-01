@@ -269,7 +269,13 @@ class ImageProcess(nn.Module):
         else:
             prior = representation[-1]
         prior = prior.mean(1, keepdim=True)
-        prior = tensor_to_loc_scale(prior, torch.distributions.Normal, axis=2)
+        try:
+            prior = tensor_to_loc_scale(prior, torch.distributions.Normal, axis=2)
+        except ValueError as e:
+            print(prior.shape)
+            print(torch.any(torch.isnan(prior)))
+            print(prior)
+            raise e
         if save:
             self.prior = prior
 
