@@ -258,9 +258,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         number_of_threads_in_multithreaded = kwargs.get(
             "number_of_threads_in_multithreaded", None
         )
-        super(FutureContextGenerator2D, self).__init__(
-            data, batch_size, number_of_threads_in_multithreaded
-        )
+        super().__init__(data, batch_size, number_of_threads_in_multithreaded)
 
         if ddir is None:
             ddir = data_dir
@@ -404,7 +402,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         target_seg = []
         target_days = []
 
-        slices = []
+        if self.axis is not None:
+            slices = []
         subjects = []
         timesteps = []
         subject_associations = []
@@ -421,7 +420,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                     idx += 1
                     continue
 
-            slices.append(slc[self.axis + 2])
+            if self.axis is not None:
+                slices.append(slc[self.axis + 2])
             subjects.append(subject)
             timesteps.append(slc[0].start)
             subject_associations.append(self._all_subject_associations[subject])
@@ -447,11 +447,12 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             data=np.stack(context_data),
             seg=np.stack(context_seg).astype(self.dtype_seg),
             scan_days=np.stack(context_days)[:, :, None].astype(np.float32),
-            slices=np.array(slices),
             timesteps=np.array(timesteps),
             subjects=np.array(subjects),
             subject_associations=np.array(subject_associations),
         )
+        if self.axis is not None:
+            context["slices"] = np.array(slices)
         target = dict(
             data=np.stack(target_data),
             seg=np.stack(target_seg).astype(self.dtype_seg),
@@ -471,6 +472,64 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             target["seg"][target["seg"] > 0] = 1
 
         return context, target
+
+
+class FutureContextGenerator3D(FutureContextGenerator2D):
+    """Same as FutureContextGenerator2D, but in 3D."""
+
+    def __init__(self, *args, **kwargs):
+
+        super().__init__(*args, **kwargs)
+        self.axis = None
+
+    @property
+    def possible_sets(self) -> List[Tuple[str, Tuple]]:
+        """Construct a list of all possible (subject, slice) pairs that are allowed
+        for the configuration of the generator.
+        """
+
+        try:
+            return self._possible_sets
+        except AttributeError:
+
+            if self.only_tumor:
+                with open(os.path.join(self.ddir, "multi_tumor_crop.json"), "r") as f:
+                    tumor_crops = json.load(f)
+
+            sets = []
+            for time_size in self.time_size:
+                for subject in sorted(self._data.keys()):
+                    current_timesteps = self._data[subject].shape[0]
+                    if current_timesteps <= time_size:
+                        continue
+                    for t in range(current_timesteps - time_size):
+                        slc = [
+                            slice(None),
+                        ] * 5
+                        slc[0] = slice(t, t + time_size)
+                        if self.patch_size is not None:
+                            if self.only_tumor:
+                                tumor_bbox = tumor_crops[subject]
+                            else:
+                                tumor_bbox = [[], []]
+                                for i in range(3):
+                                    tumor_bbox[0].append(0)
+                                    tumor_bbox[1].append(
+                                        self._data[subject].shape[i + 2]
+                                    )
+                            tumor_bbox = modify_bbox(
+                                *tumor_bbox,
+                                self.patch_size,
+                                self._data[subject].shape[2:],
+                            )
+                            for ax in range(3):
+                                slc[ax + 2] = slice(
+                                    tumor_bbox[0][ax], tumor_bbox[1][ax] + 1
+                                )
+                        sets.append((subject, tuple(slc)))
+
+            self._possible_sets = sets
+            return sets
 
 
 class RandomFutureContextGenerator2D(FutureContextGenerator2D):
@@ -493,7 +552,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
         **kwargs,
     ):
 
-        super(RandomFutureContextGenerator2D, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.random_date_shift = random_date_shift
         self.random_rotation = random_rotation
@@ -502,7 +561,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
     def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
 
-        super(RandomFutureContextGenerator2D, self).reset()
+        super().reset()
         self.rs = np.random.RandomState(
             self.thread_id
             + self.num_restarted * self.number_of_threads_in_multithreaded
@@ -540,6 +599,85 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
                 context["seg"][r] = np.rot90(context["seg"][r], k=num_rot, axes=axes)
                 target["data"][r] = np.rot90(target["data"][r], k=num_rot, axes=axes)
                 target["seg"][r] = np.rot90(target["seg"][r], k=num_rot, axes=axes)
+
+        if not self.merge_context_target:
+            return context, target
+        else:
+            return ct_to_transformable(context, target)
+
+
+class RandomFutureContextGenerator3D(FutureContextGenerator3D):
+    """Same as FutureContextGenerator3D, but shuffles data.
+
+    Args:
+        random_date_shift: Randomly shift dates (drawn uniformly). This is applied
+            AFTER normalize_date_factor!
+        random_rotation: Random 90 degree rotations. You can also do this with data
+            augmentation, but if you only want these rotations, it's more convenient
+            to do internally.
+
+    """
+
+    def __init__(
+        self,
+        *args,
+        random_date_shift: Iterable[float] = (-1.0, 1.0),
+        random_rotation: bool = True,
+        **kwargs,
+    ):
+
+        super().__init__(*args, **kwargs)
+
+        self.random_date_shift = random_date_shift
+        self.random_rotation = random_rotation
+        self.num_restarted = 0
+
+    def reset(self):
+        """Resets the generator. Called automatically when infinite=True."""
+
+        super().reset()
+        self.rs = np.random.RandomState(
+            self.thread_id
+            + self.num_restarted * self.number_of_threads_in_multithreaded
+        )
+        self.rs.shuffle(self.data_order)
+        self.num_restarted = self.num_restarted + 1
+
+    def generate_train_batch(self) -> Union[Tuple[Dict, Dict], Dict]:
+        """This is called internally when you do next() on the generator."""
+
+        if not self.was_initialized:
+            self.reset()
+        if self.current_position >= len(self.possible_sets):
+            self.reset()
+            if not self.infinite:
+                raise StopIteration
+        context, target = self.make_batch(self.current_position)
+        self.current_position += (
+            self.number_of_threads_in_multithreaded * self.batch_size
+        )
+
+        if self.random_date_shift is not None:
+            shift = self.rs.uniform(
+                *self.random_date_shift, size=(context["scan_days"].shape[0], 1, 1)
+            )
+            context["scan_days"] = context["scan_days"] + shift
+            target["scan_days"] = target["scan_days"] + shift
+
+        if self.random_rotation:
+            for axes in ((1, 2), (1, 3), (2, 3)):
+                rot = self.rs.randint(0, 4, size=(context["data"].shape[0],))
+                for r, num_rot in enumerate(rot):
+                    context["data"][r] = np.rot90(
+                        context["data"][r], k=num_rot, axes=axes
+                    )
+                    context["seg"][r] = np.rot90(
+                        context["seg"][r], k=num_rot, axes=axes
+                    )
+                    target["data"][r] = np.rot90(
+                        target["data"][r], k=num_rot, axes=axes
+                    )
+                    target["seg"][r] = np.rot90(target["seg"][r], k=num_rot, axes=axes)
 
         if not self.merge_context_target:
             return context, target
@@ -670,7 +808,7 @@ class GliomaModule(pl.LightningDataModule):
             This can also be an iterable of multiple options. For example, if you want
             to predict a future timestep from between 2 and 4 inputs, this should be
             [3, 4, 5].
-        dim:
+        dim: Should be 2 or 3.
         axis: Extract slices along this axis. Note that extraction along axes other than
             0 can be slow and it might be worth saving the data in a different
             orientation instead.
@@ -735,10 +873,12 @@ class GliomaModule(pl.LightningDataModule):
     ):
         super().__init__(dims=dim)
 
-        if dim != 2:
-            raise NotImplementedError(
-                "At the moment, only two-dimensional dataloading is implemented!"
-            )
+        # if dim != 2:
+        #     raise NotImplementedError(
+        #         "At the moment, only two-dimensional dataloading is implemented!"
+        #     )
+        if dim not in (2, 3):
+            raise ValueError("'dim' mist be 2 or 3, but is {}.".format(dim))
 
         self.data_dir = data_dir
         self.batch_size = batch_size
@@ -786,11 +926,18 @@ class GliomaModule(pl.LightningDataModule):
             self.subjects_train = self.subjects_train + spl[s]
         self.subjects_train = sorted(self.subjects_train)
 
-    def train_dataloader(self) -> RandomFutureContextGenerator2D:
+    def train_dataloader(
+        self,
+    ) -> Union[RandomFutureContextGenerator2D, RandomFutureContextGenerator3D]:
         """Construct training dataloader."""
 
+        if self.dim == 2:
+            gen = RandomFutureContextGenerator2D
+        else:
+            gen = RandomFutureContextGenerator3D
+
         train_data = load("r", subjects=self.subjects_train, ddir=self.data_dir)
-        train_gen = RandomFutureContextGenerator2D(
+        train_gen = gen(
             data=train_data,
             batch_size=self.batch_size,
             time_size=self.time_size,
@@ -836,13 +983,26 @@ class GliomaModule(pl.LightningDataModule):
 
         return train_gen
 
-    def val_dataloader(self) -> FutureContextGenerator2D:
+    def val_dataloader(
+        self,
+    ) -> Union[
+        FutureContextGenerator2D,
+        FutureContextGenerator3D,
+        RandomFutureContextGenerator2D,
+        RandomFutureContextGenerator3D,
+    ]:
         """Construct validation dataloader."""
 
         if self.validate_random:
-            gen = RandomFutureContextGenerator2D
+            if self.dim == 2:
+                gen = RandomFutureContextGenerator2D
+            else:
+                gen = RandomFutureContextGenerator3D
         else:
-            gen = FutureContextGenerator2D
+            if self.dim == 2:
+                gen = FutureContextGenerator2D
+            else:
+                gen = FutureContextGenerator3D
 
         val_data = load("r", subjects=self.subjects_val, ddir=self.data_dir)
         val_gen = gen(
@@ -861,11 +1021,18 @@ class GliomaModule(pl.LightningDataModule):
 
         return val_gen
 
-    def test_dataloader(self) -> FutureContextGenerator2D:
+    def test_dataloader(
+        self,
+    ) -> Union[FutureContextGenerator2D, FutureContextGenerator3D]:
         """Construct test dataloader."""
 
+        if self.dim == 2:
+            gen = FutureContextGenerator2D
+        else:
+            gen = FutureContextGenerator3D
+
         test_data = load("r", subjects=self.subjects_test, ddir=self.data_dir)
-        test_gen = FutureContextGenerator2D(
+        test_gen = gen(
             data=test_data,
             batch_size=1,
             time_size=self.time_size,
@@ -937,7 +1104,9 @@ class GliomaModule(pl.LightningDataModule):
         seg_cmap: Optional[mp.colors.Colormap] = mp.cm.viridis,
         figsize: int = 2,
     ) -> mp.figure.Figure:
-        """Show examples from all dataloaders. Mainly for visual debugging.
+        """Show examples from all dataloaders.
+
+        Mainly for visual debugging. Only 2D at the moment.
 
         Args:
             dataloaders: Show examples from these dataloaders. These will most likely
