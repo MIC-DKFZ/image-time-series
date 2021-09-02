@@ -591,8 +591,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
             target["scan_days"] = target["scan_days"] + shift
 
         if self.random_rotation:
-            axes = [1, 2, 3]
-            del axes[self.axis]
+            axes = (2, 3)
             rot = self.rs.randint(0, 4, size=(context["data"].shape[0],))
             for r, num_rot in enumerate(rot):
                 context["data"][r] = np.rot90(context["data"][r], k=num_rot, axes=axes)
@@ -665,7 +664,7 @@ class RandomFutureContextGenerator3D(FutureContextGenerator3D):
             target["scan_days"] = target["scan_days"] + shift
 
         if self.random_rotation:
-            for axes in ((1, 2), (1, 3), (2, 3)):
+            for axes in ((2, 3), (2, 4), (3, 4)):
                 rot = self.rs.randint(0, 4, size=(context["data"].shape[0],))
                 for r, num_rot in enumerate(rot):
                     context["data"][r] = np.rot90(
@@ -1103,6 +1102,7 @@ class GliomaModule(pl.LightningDataModule):
         channel: int = 0,
         seg_cmap: Optional[mp.colors.Colormap] = mp.cm.viridis,
         figsize: int = 2,
+        axis: int = 0,
     ) -> mp.figure.Figure:
         """Show examples from all dataloaders.
 
@@ -1114,6 +1114,7 @@ class GliomaModule(pl.LightningDataModule):
             channel: Which channel to show.
             seg_cmap: Colormap for the segmentation.
             figsize: Size of an individual panel in the figure.
+            axis: Use this axis for 3D loaders.
 
         Returns:
             A figure object
@@ -1131,10 +1132,15 @@ class GliomaModule(pl.LightningDataModule):
         for t in range(ncols):
             for b, batch in enumerate(batches):
                 if t * 4 < batch["data"].shape[1]:
-                    ax[2 * b, t].imshow(batch["data"][0, t * 4 + channel], cmap="gray")
-                    ax[2 * b + 1, t].imshow(
-                        batch["seg"][0, t], cmap=seg_cmap, vmin=0, vmax=3
-                    )
+                    data_current = batch["data"][0, t * 4 + channel]
+                    seg_current = batch["seg"][0, t]
+                    if data_current.ndim == 3:
+                        slc = [slice(None)] * 3
+                        slc[axis] = data_current.shape[axis] // 2
+                        data_current = data_current[tuple(slc)]
+                        seg_current = seg_current[tuple(slc)]
+                    ax[2 * b, t].imshow(data_current, cmap="gray")
+                    ax[2 * b + 1, t].imshow(seg_current, cmap=seg_cmap, vmin=0, vmax=3)
 
         for r in range(ax.shape[0]):
             for c in range(ax.shape[1]):

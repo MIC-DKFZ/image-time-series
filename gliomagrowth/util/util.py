@@ -388,7 +388,7 @@ def modify_bbox(
 
         width = ul - ll + 1
         switch = 0
-        while width != ts and width <= ms and width > 0:
+        while width != ts and width < ms and width > 0:
 
             if width > ts:
 
