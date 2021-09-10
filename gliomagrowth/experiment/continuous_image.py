@@ -295,10 +295,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         in_channels = list(reversed(in_channels))
         if hparams.model_initial_upsample_kwargs is None:
             initial_upsample_kwargs = dict(
-                size=(
-                    2 ** (7 - hparams.model_depth),
-                    2 ** (7 - hparams.model_depth),
-                )
+                size=(2 ** (7 - hparams.model_depth),) * hparams.dim
             )
         else:
             initial_upsample_kwargs = hparams.model_initial_upsample_kwargs
@@ -457,18 +454,18 @@ class ContinuousTumorGrowth(pl.LightningModule):
         context, target = transformable_to_ct(batch)
 
         context_query = context["scan_days"]  # (B, N, 1)
-        context_seg = context["seg"]  # (B, N, 1, H, W)
+        context_seg = context["seg"]  # (B, N, 1, SPACE)
         target_query = target["scan_days"]  # (B, M, 1)
-        target_seg = target["seg"]  # (B, M, 1, H, W)
+        target_seg = target["seg"]  # (B, M, 1, SPACE)
         context_query = torch.from_numpy(context_query).to(self.device, torch.float)
         context_seg = torch.from_numpy(context_seg).to(self.device, torch.float)
         target_query = torch.from_numpy(target_query).to(self.device, torch.float)
         target_seg = torch.from_numpy(target_seg).to(self.device, torch.float)
         if self.hparams.use_images:
-            context_image = context["data"]  # (B, N, C, H, W)
+            context_image = context["data"]  # (B, N, C, SPACE)
             context_image = torch.from_numpy(context_image).to(self.device, torch.float)
             # target images only for posterior
-            target_image = target["data"]  # (B, M, C, H, W)
+            target_image = target["data"]  # (B, M, C, SPACE)
             target_image = torch.from_numpy(target_image).to(self.device, torch.float)
         else:
             context_image = None
@@ -535,13 +532,14 @@ class ContinuousTumorGrowth(pl.LightningModule):
         if return_all:
             log_tensor["subjects"] = context["subjects"]
             log_tensor["timesteps"] = context["timesteps"]
-            log_tensor["slices"] = context["slices"]
             log_tensor["context_query"] = context_query
             log_tensor["target_query"] = target_query
             log_tensor["context_image"] = context_image
             log_tensor["context_seg"] = context_seg
             log_tensor["target_seg"] = target_seg
             log_tensor["prediction"] = prediction
+            if "slices" in context:
+                log_tensor["slices"] = context["slices"]
 
         return loss_total, log, log_tensor
 
@@ -775,7 +773,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         """
 
-        # assume (B, N, C, H, W) shape
+        # Assume (B, N, C, H, W) shape. In 3D we just take the center along the first
+        # axis. Shouldn't matter, because we usually work with random rotations anyway.
+        if self.hparams.dim == 3:
+            tensor = tensor[:, :, :, tensor.shape[3] // 2]
         image_grid = make_grid(
             tensor=tensor[:ntotal, -1].float(),
             nrow=nrow,
@@ -1059,14 +1060,14 @@ class ContinuousTumorGrowth(pl.LightningModule):
         best_volume_index = torch.argmin(torch.abs(pred_volumes - gt_volume))
         best_volume_dice = dice_all_samples[best_volume_index]
 
-        subject_info = "_".join(
-            [
-                log_tensor["subjects"][0],
-                str(log_tensor["timesteps"][0] + log_tensor["context_query"].shape[1]),
-                str(log_tensor["slices"][0]),
-                "it" + str(log_tensor["context_query"].shape[1]),
-            ]
-        )
+        subject_info = [
+            log_tensor["subjects"][0],
+            str(log_tensor["timesteps"][0] + log_tensor["context_query"].shape[1]),
+            "it" + str(log_tensor["context_query"].shape[1]),
+        ]
+        if "slices" in log_tensor:
+            subject_info.insert(-1, str(log_tensor["slices"][0]))
+        subject_info = "_".join(subject_info)
 
         result = np.array(
             [

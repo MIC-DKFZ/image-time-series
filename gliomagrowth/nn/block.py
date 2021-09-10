@@ -444,7 +444,7 @@ class MultiInputConvDecoder(ConvModule):
     _default_conv_kwargs = dict(kernel_size=3, padding=1)
     _default_upsample_kwargs = dict(scale_factor=2)
     _default_dropout_kwargs = dict()
-    _default_initial_upsample_kwargs = dict(size=(8, 8))
+    _default_initial_upsample_kwargs = dict(scale_factor=8)
     _default_output_activation_kwargs = dict(dim=1)
 
     def __init__(
@@ -662,6 +662,7 @@ class MultiInputConvDecoder3D(MultiInputConvDecoder):
             norm_op=nn.InstanceNorm3d,
             conv_op=nn.Conv3d,
             coords_dim=3,
+            initial_upsample_kwargs=dict(size=(8, 8)),
         )
 
         for (arg, val) in update_kwargs.items():
