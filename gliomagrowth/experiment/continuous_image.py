@@ -1236,10 +1236,13 @@ if __name__ == "__main__":
         args.transform_blur = False
         args.transform_brightness = False
 
+    experiment_name = os.path.basename(__file__).split(".")[0]
+    if hasattr(args, "dim") and args.dim != 2:
+        experiment_name += "_{}d".format(args.dim)
     run_experiment(
         ExperimentModule,
         DataModule,
         args,
-        os.path.basename(__file__).split(".")[0],
+        experiment_name,
         globs=globals(),
     )
