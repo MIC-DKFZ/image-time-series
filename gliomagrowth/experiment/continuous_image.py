@@ -968,7 +968,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 batch_idx=batch_idx,
                 to_disk=True,
                 subdir="val",
-                nrow=8,
+                nrow=samples.shape[0] // 8,
                 padding=2,
                 normalize=True,
                 range_=(0, self.hparams.num_classes - 1),

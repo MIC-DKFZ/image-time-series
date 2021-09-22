@@ -37,6 +37,11 @@ data_dir = "/media/jens/SSD/bovarec/multi"
 file_dir = os.path.dirname(os.path.abspath(__file__))
 data_dir = os.path.join(file_dir, data_dir)
 
+# dirty, dirty hack
+class MultiThreadedAugmenter(MultiThreadedAugmenter):
+    def __len__(self):
+        return len(self.generator)
+
 
 def split(
     N: int = 5, seed: int = 1, ddir: Optional[str] = None, use_defaults: bool = True
@@ -358,6 +363,10 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                             sets.append((subject, tuple(slc)))
             self._possible_sets = sets
             return sets
+
+    def __len__(self):
+
+        return len(self.possible_sets) // self.batch_size
 
     def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
