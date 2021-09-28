@@ -62,7 +62,7 @@ Many of the experiment arguments can select an operator/nn.Module to use for a c
 
 Unfortunately we were not yet able to get clearance to publish our data. If you want to work with your own data, you can use the dataloaders provided in `data.glioma`. We expect a folder with the following (if you want to use the dataloaders without changes):
 
-* Data as `patientID.npy` files, where each file has shape (T,C,X,Y,Z), and the last entry along the channel axis is the segmentation.
+* Data as `patientID.npy` files, where each file has shape (T,C,X,Y,Z), and the last entry along the channel axis is the segmentation. If you want to draw 2D slices, we strongly suggest you use the X axis, it's much faster.
 * `default_splits.json`, which contains a list of lists of patient IDs.
 * `multi_days.csv`, where each row is a patient ID followed by the time values of the scans (i.e. the first axis of the corresponding array).
 * `multi_overlaps.json`, a dictionary of patient IDs to lists, where each list contains the (foreground) Dice overlaps of consecutive time points. We only use this for evaluation to filter out certain cases.
@@ -88,4 +88,4 @@ If you found this repository useful or our paper is relevant to your work, pleas
         author = {Petersen, Jens and Isensee, Fabian and Köhler, Gregor and Jäger, Paul F. and Zimmerer, David and Neuberger, Ulf and Wick, Wolfgang and Debus, Jürgen and Heiland, Sabine and Bendszus, Martin and Vollmuth, Philipp and Maier-Hein, Klaus H.},
         editor = {de Bruijne, Marleen and Cattin, Philippe C. and Cotin, Stéphane and Padoy, Nicolas and Speidel, Stefanie and Zheng, Yefeng and Essert, Caroline},
         year = {2021},
-}
+    }
