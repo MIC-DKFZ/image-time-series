@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import numpy as np
 import os
@@ -209,12 +210,16 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
     Args:
         data: The data to generate patches from. Use load() to construct.
         batch_size: The batch size :)
-        time_size: Number of consecutive timesteps that make up context/target pairs.
-            Target will always be the last timestep, context all but the last. Other
-            configurations are not supported atm, but should be easy to implement.
-            This can also be an iterable of multiple options. For example, if you want
-            to predict a future timestep from between 2 and 4 inputs, this should be
-            [3, 4, 5].
+        context_size: Number of context points. Either a fixed number or bounds for
+            random draws. For the latter, the upper limit is EXCLUSIVE like in
+            np.random.randint.
+        target_size: Number of target points. Either a fixed number or bounds for
+            random draws. For the latter, the upper limit is EXCLUSIVE like in
+            np.random.randint.
+        forward_only: If this is active, the target points will strictly be in the
+            future.
+        context_larger_than_target: If this is active, there will always be more context
+            points than target points
         axis: Extract slices along this axis. Note that extraction along axes other than
             0 can be slow and it might be worth saving the data in a different
             orientation instead.
@@ -244,7 +249,10 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         self,
         data: Dict[str, np.ndarray],
         batch_size: int,
-        time_size: Union[int, Iterable[int]],
+        context_size: Union[int, Iterable[int]],
+        target_size: Union[int, Iterable[int]],
+        forward_only: bool = False,
+        context_larger_than_target: bool = True,
         axis: int = 0,
         patch_size: int = 64,
         infinite: bool = False,
@@ -269,9 +277,10 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             ddir = data_dir
         self.ddir = ddir
 
-        if not hasattr(time_size, "__iter__"):
-            time_size = (time_size,)
-        self.time_size = time_size
+        self.context_size = context_size
+        self.target_size = target_size
+        self.forward_only = forward_only
+        self.context_larger_than_target = context_larger_than_target
         self.axis = axis
         self.patch_size = patch_size
         self.infinite = infinite
@@ -298,7 +307,11 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if self.number_of_threads_in_multithreaded is None:
             self.number_of_threads_in_multithreaded = 1
 
-        self.data_order = np.arange(len(self.possible_sets))
+        import IPython
+
+        IPython.embed()
+
+        self.data_order = np.arange(len(self))
 
     @property
     def possible_sets(self) -> List[Tuple[str, Tuple]]:
@@ -314,59 +327,112 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                 with open(os.path.join(self.ddir, "multi_tumor_crop.json"), "r") as f:
                     tumor_crops = json.load(f)
 
-            sets = []
-            for time_size in self.time_size:
-                for subject in sorted(self._data.keys()):
-                    current_timesteps = self._data[subject].shape[0]
-                    if current_timesteps <= time_size:
+            if hasattr(self.context_size, "__iter__"):
+                context_size = list(range(*self.context_size))
+            else:
+                context_size = [self.context_size]
+            if hasattr(self.target_size, "__iter__"):
+                target_size = list(range(*self.target_size))
+            else:
+                target_size = [self.target_size]
+            context_target_combinations = list(
+                itertools.product(context_size, target_size)
+            )
+            if self.context_larger_than_target:
+                context_target_combinations = [
+                    (c, t) for (c, t) in context_target_combinations if c > t
+                ]
+            possible_sets = {ct: [] for ct in context_target_combinations}
+            min_size = min(context_size) + min(target_size)
+
+            # we collect the possible sets for all combinations of context and target
+            for subject in sorted(self._data.keys()):
+
+                current_timesteps = self._data[subject].shape[0]
+                if current_timesteps < min_size:
+                    continue
+                indices = list(range(current_timesteps))
+
+                # construct the bounds of the slice range
+                if self.only_tumor:
+                    possible_slices = tumor_crops[subject]
+                    possible_slices = (
+                        possible_slices[0][self.axis],
+                        possible_slices[1][self.axis],
+                    )
+                else:
+                    possible_slices = (
+                        0,
+                        self._data[subject].shape[self.axis + 2] - 1,
+                    )
+
+                slc = [slice(None)] * 5
+
+                # limit patches to tumor region
+                if self.patch_size is not None:
+                    if self.only_tumor:
+                        tumor_bbox = tumor_crops[subject]
+                    else:
+                        tumor_bbox = [[], []]
+                        for i in range(3):
+                            tumor_bbox[0].append(0)
+                            tumor_bbox[1].append(self._data[subject].shape[i + 2])
+                    tumor_bbox = modify_bbox(
+                        *tumor_bbox,
+                        self.patch_size,
+                        self._data[subject].shape[2:],
+                        skip_axes=self.axis,
+                    )
+                    for ax in range(3):
+                        if ax == self.axis:
+                            continue
+                        slc[ax + 2] = slice(tumor_bbox[0][ax], tumor_bbox[1][ax] + 1)
+
+                for c, t in possible_sets.keys():
+
+                    if c + t > current_timesteps:
                         continue
-                    for t in range(current_timesteps - time_size):
-                        if self.only_tumor:
-                            possible_slices = tumor_crops[subject]
-                            possible_slices = (
-                                possible_slices[0][self.axis],
-                                possible_slices[1][self.axis],
-                            )
-                        else:
-                            possible_slices = (
-                                0,
-                                self._data[subject].shape[self.axis + 2] - 1,
-                            )
-                        for i in range(possible_slices[0], possible_slices[1] + 1):
-                            slc = [
-                                slice(None),
-                            ] * 5
-                            slc[0] = slice(t, t + time_size)
-                            slc[self.axis + 2] = i
-                            if self.patch_size is not None:
-                                if self.only_tumor:
-                                    tumor_bbox = tumor_crops[subject]
-                                else:
-                                    tumor_bbox = [[], []]
-                                    for i in range(3):
-                                        tumor_bbox[0].append(0)
-                                        tumor_bbox[1].append(
-                                            self._data[subject].shape[i + 2]
-                                        )
-                                tumor_bbox = modify_bbox(
-                                    *tumor_bbox,
-                                    self.patch_size,
-                                    self._data[subject].shape[2:],
-                                    skip_axes=self.axis,
+
+                    for i in range(possible_slices[0], possible_slices[1] + 1):
+
+                        slc[self.axis + 2] = i
+
+                        # we now draw all possible indices of context and target
+                        for index_subset in itertools.combinations(indices, c + t):
+                            # now we have a subset of indices that we need to assign to
+                            # context and target.
+                            # In forward-only mode, there is only one possibility
+                            if self.forward_only:
+                                slc[0] = tuple(index_subset[:c])
+                                context_slc = tuple(slc)
+                                slc[0] = tuple(index_subset[-t:])
+                                target_slc = tuple(slc)
+                                possible_sets[(c, t)].append(
+                                    (subject, context_slc, target_slc)
                                 )
-                                for ax in range(3):
-                                    if ax == self.axis:
-                                        continue
-                                    slc[ax + 2] = slice(
-                                        tumor_bbox[0][ax], tumor_bbox[1][ax] + 1
+                            else:
+                                for t_idx in itertools.combinations(index_subset, t):
+                                    slc[0] = t_idx
+                                    target_slc = tuple(slc)
+                                    c_idx = tuple(
+                                        [
+                                            idx
+                                            for idx in index_subset
+                                            if idx not in t_idx
+                                        ]
                                     )
-                            sets.append((subject, tuple(slc)))
-            self._possible_sets = sets
-            return sets
+                                    slc[0] = c_idx
+                                    context_slc = tuple(slc)
+                                    possible_sets[(c, t)].append(
+                                        (subject, context_slc, target_slc)
+                                    )
+
+            self._possible_sets = possible_sets
+            return possible_sets
 
     def __len__(self):
 
-        return len(self.possible_sets) // self.batch_size
+        return sum(map(len, self.possible_sets)) // self.batch_size
 
     def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
