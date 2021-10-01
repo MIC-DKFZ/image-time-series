@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import numpy as np
 import torch
 from torch import nn
@@ -570,3 +571,87 @@ def tensor_to_loc_scale(
         scale = torch.exp(0.5 * scale)
 
     return distribution(loc, scale)
+
+
+class Node:
+    def __init__(self, data=None, children=None):
+
+        self.data = data
+
+        if children is None:
+            self._children = []
+        elif isinstance(children, Node):
+            self._children = [children]
+        else:
+            self._children = list(children)
+
+    def add_child(self, child):
+
+        self._children.append(child)
+
+    def remove_child(self, child=None, index=None):
+
+        if child is None and index is None:
+            raise ValueError("Please provide either child or child index!")
+        elif child is not None and index is not None:
+            raise ValueError("Please provide either child or index, not both!")
+        elif child is not None:
+            del self._children[self._children.index(child)]
+        else:
+            del self._children[index]
+
+    def set_child(self, index, child):
+
+        self._children[index].replace(child)
+
+    def replace(self, node):
+
+        self.data = node.data
+        self._children = node._children
+
+    def __len__(self):
+
+        if len(self._children) > 0:
+            return sum(map(len, self._children))
+        else:
+            return 1
+
+    def __getitem__(self, index):
+
+        if not isinstance(index, int):
+            raise ValueError("__getitem__ is only implemented for integers!")
+
+        len_self = len(self)
+
+        # check that index works
+        if index < 0:
+            index = len_self + index
+        if index < 0 or index > len_self - 1:
+            raise IndexError("list index out of range")
+
+        # leaf nodes return themselves
+        if len_self == 1:
+            return self
+        else:
+            counter = 0
+            for child in self._children:
+                if index < counter + len(child):
+                    break
+                else:
+                    counter += len(child)
+            return child[index - counter]
+
+    def __setitem__(self, index, node):
+
+        if not isinstance(node, Node):
+            raise TypeError("You can only use __setitem__ with other nodes!")
+
+        self[index].replace(node)
+
+    def __repr__(self):
+
+        info_str = repr(self.data)
+        for child in self._children:
+            for l, line in enumerate(repr(child).split("\n")):
+                info_str += "\n" + 2 * "-" + line
+        return info_str
