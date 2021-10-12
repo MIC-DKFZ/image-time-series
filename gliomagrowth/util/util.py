@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from multiprocessing import Value
 import numpy as np
 import torch
@@ -574,7 +576,19 @@ def tensor_to_loc_scale(
 
 
 class Node:
-    def __init__(self, data=None, children=None):
+    """Simple base class for a tree node.
+
+    Args:
+        data: Any kind of data you want to store at the node.
+        children: One or multiple nodes that should become children.
+
+    """
+
+    def __init__(
+        self,
+        data: Optional[Any] = None,
+        children: Optional[Union[Node, Iterable[Node]]] = None,
+    ):
 
         self.data = data
 
@@ -585,11 +599,25 @@ class Node:
         else:
             self._children = list(children)
 
-    def add_child(self, child):
+    def add_child(self, child: Node):
+        """Add a child node.
+
+        Args:
+            child: The child node to add to this one's children.
+
+        """
 
         self._children.append(child)
 
-    def remove_child(self, child=None, index=None):
+    def remove_child(self, child: Optional[Node] = None, index: Optional[int] = None):
+        """Remove a child node. You can provide either the node directly or an index,
+        but not both.
+
+        Args:
+            child: Remove this child node.
+            index: Remove the node at this index in self._children.
+
+        """
 
         if child is None and index is None:
             raise ValueError("Please provide either child or child index!")
@@ -600,11 +628,24 @@ class Node:
         else:
             del self._children[index]
 
-    def set_child(self, index, child):
+    def set_child(self, index: int, child: Node):
+        """Change a child node to the provided new one.
+
+        Args:
+            index: Change the node at this index of self._children.
+            child: New node to be inserted.
+
+        """
 
         self._children[index].replace(child)
 
-    def replace(self, node):
+    def replace(self, node: Node):
+        """Replace self with a new node. This copies the data and _children attributes.
+
+        Args:
+            node: New node to get data and children from.
+
+        """
 
         self.data = node.data
         self._children = node._children
@@ -616,7 +657,7 @@ class Node:
         else:
             return 1
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int):
 
         if not isinstance(index, int):
             raise ValueError("__getitem__ is only implemented for integers!")
@@ -641,7 +682,7 @@ class Node:
                     counter += len(child)
             return child[index - counter]
 
-    def __setitem__(self, index, node):
+    def __setitem__(self, index: int, node: Node):
 
         if not isinstance(node, Node):
             raise TypeError("You can only use __setitem__ with other nodes!")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import OrderedDict
+from datetime import time
 import itertools
 import json
 import numpy as np
@@ -10,6 +12,7 @@ import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import matplotlib as mp
 from typing import Optional, Union, List, Dict, Tuple, Iterable
+from math import factorial, comb
 
 from batchgenerators.dataloading.data_loader import SlimDataLoaderBase
 from batchgenerators.dataloading import MultiThreadedAugmenter, SingleThreadedAugmenter
@@ -30,6 +33,7 @@ from gliomagrowth.util.util import (
     transformable_to_ct,
     ct_to_transformable,
     NpzLazyDict,
+    Node,
 )
 from gliomagrowth.util.lightning import str2bool
 
@@ -201,6 +205,145 @@ def all_scan_days(ddir: Optional[str] = None) -> Dict[str, List[int]]:
     return load_days_and_associations(ddir)[0]
 
 
+class PatientNode(Node):
+    """A special leaf node of a tree that can iterate over different slices for a
+    given patient. Indexing this node returns a tuple if slice objects that can directly
+    be used to access data from its patient. Works with both 2D and 3D
+
+    Args:
+        ct: A tuple of context and target set sizes.
+        subject_id: Subject identifier string.
+        time_size: Size of the time axis for this subject.
+        forward_only: If active, target points will always come after context points.
+        axis: If provided, the node will also iterate over spatial slices along this
+            axis.
+        first_slice: First slice along the provided axis.
+        last_slice: Last slice along the provided axis. Inclusive!
+
+    """
+
+    def __init__(
+        self,
+        ct: Tuple[int, int],
+        subject_id: str,
+        time_size: int,
+        forward_only: bool = False,
+        axis: Optional[int] = None,
+        first_slice: Optional[int] = None,
+        last_slice: Optional[int] = None,
+    ):
+
+        super().__init__()
+
+        self.ct = ct
+        self.subject_id = subject_id
+        self.time_size = time_size
+        self.forward_only = forward_only
+        self.axis = axis
+        self.first_slice = first_slice
+        self.last_slice = last_slice
+
+    def replace(self, node: Node):
+
+        self.ct = node.ct
+        self.subject_id = node.subject_id
+        self.time_size = node.time_size
+        self.forward_only = node.forward_only
+        self.axis = node.axis
+        self.first_slice = node.first_slice
+        self.last_slice = node.last_slice
+        self.data = node.data
+        self._children = node._children
+
+    def __len__(self):
+
+        # how many ways are there to draw context and target out of time_size elements?
+        c, t = self.ct
+
+        # in forward-only mode, the order is fixed (target comes after context),
+        # so it's just about how many subsets we can draw where the elements are
+        # indistinguishable.
+        possibilities = comb(self.time_size, c + t)
+
+        # if not in forward-only mode, we can again draw t elements out of the subset
+        if not self.forward_only:
+            possibilities *= comb(c + t, t)
+
+        # if we work in 2D, we can do this for every slice!
+        if self.first_slice is not None and self.last_slice is not None:
+            possibilities *= self.last_slice - self.first_slice + 1
+
+        return possibilities
+
+    def __getitem__(self, index):
+
+        if not isinstance(index, int):
+            raise ValueError("__getitem__ is only implemented for integers!")
+
+        len_self = len(self)
+        c, t = self.ct
+
+        # check that index works
+        if index < 0:
+            index = len_self + index
+        if index < 0 or index > len_self - 1:
+            raise IndexError("list index out of range")
+
+        # number of possible spatial slices
+        if self.first_slice is not None and self.last_slice is not None:
+            num_slices = self.last_slice - self.first_slice + 1
+        else:
+            num_slices = 1
+
+        # number of ways to draw context + target indices
+        num_draws = comb(self.time_size, c + t)
+
+        # number of ways to assign a draw to context and target
+        if self.forward_only:
+            num_permutations = 1
+        else:
+            num_permutations = comb(c + t, t)
+
+        # now imagine an array of shape (num_slices, num_draws, num_permutations).
+        # we convert the input index to an array index
+        slice_index, draw_index, perm_index = np.unravel_index(
+            index, (num_slices, num_draws, num_permutations)
+        )
+        time_indices = list(itertools.combinations(np.arange(self.time_size), c + t))[
+            draw_index
+        ]
+        if self.forward_only:
+            context_indices, target_indices = time_indices[:c], time_indices[-t:]
+        else:
+            context_indices = list(itertools.combinations(time_indices, c))[perm_index]
+            target_indices = np.array(
+                [idx for idx in time_indices if idx not in context_indices]
+            )
+
+        context_slc = [slice(None)] * 5
+        target_slc = [slice(None)] * 5
+        context_slc[0] = tuple(context_indices)
+        target_slc[0] = tuple(target_indices)
+        if self.axis is not None:
+            context_slc[self.axis + 2] = slice_index
+            target_slc[self.axis + 2] = slice_index
+
+        return self.subject_id, context_slc, target_slc
+
+    def __repr__(self):
+
+        info_str = "({},{})-{}-t{}".format(
+            self.ct[0], self.ct[1], self.subject_id, self.time_size
+        )
+        if self.forward_only:
+            info_str += "f"
+        if self.axis is not None:
+            info_str += "-ax{}".format(self.axis)
+        if self.first_slice is not None and self.last_slice is not None:
+            info_str += "-{}:{}".format(self.first_slice, self.last_slice)
+        return info_str
+
+
 class FutureContextGenerator2D(SlimDataLoaderBase):
     """DataLoader for 2D data.
 
@@ -307,10 +450,6 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if self.number_of_threads_in_multithreaded is None:
             self.number_of_threads_in_multithreaded = 1
 
-        import IPython
-
-        IPython.embed()
-
         self.data_order = np.arange(len(self))
 
     @property
@@ -342,29 +481,29 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                 context_target_combinations = [
                     (c, t) for (c, t) in context_target_combinations if c > t
                 ]
+
+            # we each context, target combination, we save all the possible slices
             possible_sets = {ct: [] for ct in context_target_combinations}
-            min_size = min(context_size) + min(target_size)
 
             # we collect the possible sets for all combinations of context and target
             for subject in sorted(self._data.keys()):
-
-                current_timesteps = self._data[subject].shape[0]
-                if current_timesteps < min_size:
-                    continue
-                indices = list(range(current_timesteps))
 
                 # construct the bounds of the slice range
                 if self.only_tumor:
                     possible_slices = tumor_crops[subject]
                     possible_slices = (
                         possible_slices[0][self.axis],
-                        possible_slices[1][self.axis],
+                        possible_slices[1][self.axis] + 1,
                     )
                 else:
                     possible_slices = (
                         0,
-                        self._data[subject].shape[self.axis + 2] - 1,
+                        self._data[subject].shape[self.axis + 2],
                     )
+
+                current_timesteps = self._data[subject].shape[0]
+                for c, t in possible_sets.keys():
+                    pass
 
                 slc = [slice(None)] * 5
 
