@@ -576,7 +576,8 @@ def tensor_to_loc_scale(
 
 
 class Node:
-    """Simple base class for a tree node.
+    """Simple base class for a tree node. __getitem__ is implemented so that one can
+    iterate over leaf nodes.
 
     Args:
         data: Any kind of data you want to store at the node.
@@ -650,14 +651,14 @@ class Node:
         self.data = node.data
         self._children = node._children
 
-    def __len__(self):
+    def __len__(self) -> int:
 
         if len(self._children) > 0:
             return sum(map(len, self._children))
         else:
             return 1
 
-    def __getitem__(self, index: int):
+    def __getitem__(self, index: int) -> Node:
 
         if not isinstance(index, int):
             raise ValueError("__getitem__ is only implemented for integers!")
@@ -689,7 +690,7 @@ class Node:
 
         self[index].replace(node)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
 
         info_str = repr(self.data)
         for child in self._children:

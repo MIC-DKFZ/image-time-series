@@ -208,7 +208,7 @@ def all_scan_days(ddir: Optional[str] = None) -> Dict[str, List[int]]:
 class PatientNode(Node):
     """A special leaf node of a tree that can iterate over different slices for a
     given patient. Indexing this node returns a tuple if slice objects that can directly
-    be used to access data from its patient. Works with both 2D and 3D
+    be used to access data from its patient. Works with both 2D and 3D.
 
     Args:
         ct: A tuple of context and target set sizes.
@@ -243,6 +243,16 @@ class PatientNode(Node):
         self.first_slice = first_slice
         self.last_slice = last_slice
 
+    @property
+    def is_2d(self) -> bool:
+        """Checks if all attributes we need for 2D are there."""
+
+        return (
+            self.axis is not None
+            and self.first_slice is not None
+            and self.last_slice is not None
+        )
+
     def replace(self, node: Node):
 
         self.ct = node.ct
@@ -255,7 +265,7 @@ class PatientNode(Node):
         self.data = node.data
         self._children = node._children
 
-    def __len__(self):
+    def __len__(self) -> int:
 
         # how many ways are there to draw context and target out of time_size elements?
         c, t = self.ct
@@ -270,12 +280,12 @@ class PatientNode(Node):
             possibilities *= comb(c + t, t)
 
         # if we work in 2D, we can do this for every slice!
-        if self.first_slice is not None and self.last_slice is not None:
+        if self.is_2d:
             possibilities *= self.last_slice - self.first_slice + 1
 
         return possibilities
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Tuple[str, tuple, tuple]:
 
         if not isinstance(index, int):
             raise ValueError("__getitem__ is only implemented for integers!")
@@ -290,7 +300,7 @@ class PatientNode(Node):
             raise IndexError("list index out of range")
 
         # number of possible spatial slices
-        if self.first_slice is not None and self.last_slice is not None:
+        if self.is_2d:
             num_slices = self.last_slice - self.first_slice + 1
         else:
             num_slices = 1
@@ -324,23 +334,25 @@ class PatientNode(Node):
         target_slc = [slice(None)] * 5
         context_slc[0] = tuple(context_indices)
         target_slc[0] = tuple(target_indices)
-        if self.axis is not None:
+        if self.is_2d:
             context_slc[self.axis + 2] = slice_index
             target_slc[self.axis + 2] = slice_index
 
-        return self.subject_id, context_slc, target_slc
+        return self.subject_id, tuple(context_slc), tuple(target_slc)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
 
         info_str = "({},{})-{}-t{}".format(
             self.ct[0], self.ct[1], self.subject_id, self.time_size
         )
         if self.forward_only:
-            info_str += "f"
-        if self.axis is not None:
+            info_str += "forward"
+        if self.is_2d:
+            info_str += "-2D"
             info_str += "-ax{}".format(self.axis)
-        if self.first_slice is not None and self.last_slice is not None:
             info_str += "-{}:{}".format(self.first_slice, self.last_slice)
+        else:
+            info_str += "-3D"
         return info_str
 
 
