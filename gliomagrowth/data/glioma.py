@@ -208,7 +208,9 @@ def all_scan_days(ddir: Optional[str] = None) -> Dict[str, List[int]]:
 class PatientNode(Node):
     """A special leaf node of a tree that can iterate over different slices for a
     given patient. Indexing this node returns a tuple if slice objects that can directly
-    be used to access data from its patient. Works with both 2D and 3D.
+    be used to access data from its patient. Works with both 2D and 3D. Note that for 2D
+    you need to provide axis and slc both, otherwise it will silently choose 3D
+    operation!
 
     Args:
         ct: A tuple of context and target set sizes.
@@ -217,8 +219,10 @@ class PatientNode(Node):
         forward_only: If active, target points will always come after context points.
         axis: If provided, the node will also iterate over spatial slices along this
             axis.
-        first_slice: First slice along the provided axis.
-        last_slice: Last slice along the provided axis. Inclusive!
+        slc: We're assuming 5D shapes (T, C, X, Y, Z). If you provide this, you can
+            limit the (X, Y, Z) extent that's used. If this is None, slice(None) will
+            be used instead. If axis is provided, it will use the corresponding slice
+            object to iterate over, so for 2D operation it's required!
 
     """
 
@@ -229,8 +233,7 @@ class PatientNode(Node):
         time_size: int,
         forward_only: bool = False,
         axis: Optional[int] = None,
-        first_slice: Optional[int] = None,
-        last_slice: Optional[int] = None,
+        slc: Optional[Iterable[slice]] = None,
     ):
 
         super().__init__()
@@ -240,18 +243,19 @@ class PatientNode(Node):
         self.time_size = time_size
         self.forward_only = forward_only
         self.axis = axis
-        self.first_slice = first_slice
-        self.last_slice = last_slice
+        self.slc = slc
+
+        if self.is_2d:
+            if self.slc[self.axis].start is None or self.slc[self.axis].stop is None:
+                raise IndexError(
+                    "You need to provide a finite slice along the desired axis!"
+                )
 
     @property
     def is_2d(self) -> bool:
         """Checks if all attributes we need for 2D are there."""
 
-        return (
-            self.axis is not None
-            and self.first_slice is not None
-            and self.last_slice is not None
-        )
+        return self.axis is not None and self.slc is not None
 
     def replace(self, node: Node):
 
@@ -260,8 +264,7 @@ class PatientNode(Node):
         self.time_size = node.time_size
         self.forward_only = node.forward_only
         self.axis = node.axis
-        self.first_slice = node.first_slice
-        self.last_slice = node.last_slice
+        self.slc = node.slc
         self.data = node.data
         self._children = node._children
 
@@ -281,7 +284,7 @@ class PatientNode(Node):
 
         # if we work in 2D, we can do this for every slice!
         if self.is_2d:
-            possibilities *= self.last_slice - self.first_slice + 1
+            possibilities *= self.slc[self.axis].stop - self.slc[self.axis].start
 
         return possibilities
 
@@ -301,7 +304,7 @@ class PatientNode(Node):
 
         # number of possible spatial slices
         if self.is_2d:
-            num_slices = self.last_slice - self.first_slice + 1
+            num_slices = self.slc[self.axis].stop - self.slc[self.axis].start
         else:
             num_slices = 1
 
@@ -334,6 +337,10 @@ class PatientNode(Node):
         target_slc = [slice(None)] * 5
         context_slc[0] = tuple(context_indices)
         target_slc[0] = tuple(target_indices)
+        if self.slc is not None:
+            for i in range(3):
+                context_slc[i + 2] = self.slc[i]
+                target_slc[i + 2] = self.slc[i]
         if self.is_2d:
             context_slc[self.axis + 2] = slice_index
             target_slc[self.axis + 2] = slice_index
@@ -342,17 +349,18 @@ class PatientNode(Node):
 
     def __repr__(self) -> str:
 
-        info_str = "({},{})-{}-t{}".format(
+        info_str = "({},{}) {} t{}".format(
             self.ct[0], self.ct[1], self.subject_id, self.time_size
         )
         if self.forward_only:
             info_str += "forward"
         if self.is_2d:
-            info_str += "-2D"
-            info_str += "-ax{}".format(self.axis)
-            info_str += "-{}:{}".format(self.first_slice, self.last_slice)
+            info_str += " 2D"
+            info_str += " ax{}".format(self.axis)
         else:
-            info_str += "-3D"
+            info_str += " 3D"
+        if self.slc is not None:
+            info_str += " {}".format(self.slc)
         return info_str
 
 
@@ -447,6 +455,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             self._all_scan_days = all_scan_days(ddir)
         else:
             self._all_scan_days = scan_days
+        for key, val in self._all_scan_days.items():
+            self._all_scan_days[key] = np.array(val)
         self.only_tumor = only_tumor
         self.whole_tumor = whole_tumor
         self.dtype_seg = dtype_seg
@@ -462,12 +472,14 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if self.number_of_threads_in_multithreaded is None:
             self.number_of_threads_in_multithreaded = 1
 
-        self.data_order = np.arange(len(self))
+        self.data_order = np.arange(len(self.possible_sets))
+
+        self.failure_threshold = 1000
 
     @property
-    def possible_sets(self) -> List[Tuple[str, Tuple]]:
-        """Construct a list of all possible (subject, slice) pairs that are allowed
-        for the configuration of the generator.
+    def possible_sets(self) -> Node:
+        """Construct a tree of all possible (subject, context_slice, target_slice)
+        sets that are allowed for the configuration of the generator.
         """
 
         try:
@@ -479,11 +491,11 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                     tumor_crops = json.load(f)
 
             if hasattr(self.context_size, "__iter__"):
-                context_size = list(range(*self.context_size))
+                context_size = list(self.context_size)
             else:
                 context_size = [self.context_size]
             if hasattr(self.target_size, "__iter__"):
-                target_size = list(range(*self.target_size))
+                target_size = list(self.target_size)
             else:
                 target_size = [self.target_size]
             context_target_combinations = list(
@@ -494,30 +506,21 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                     (c, t) for (c, t) in context_target_combinations if c > t
                 ]
 
-            # we each context, target combination, we save all the possible slices
-            possible_sets = {ct: [] for ct in context_target_combinations}
+            # The collection of possible slices is stored as a tree!
+            main_node = Node()
+            for ct in context_target_combinations:
+                main_node.add_child(Node(data=ct))
 
             # we collect the possible sets for all combinations of context and target
             for subject in sorted(self._data.keys()):
 
+                slc = [slice(None)] * 3
+                current_timesteps = self._data[subject].shape[0]
+
                 # construct the bounds of the slice range
                 if self.only_tumor:
-                    possible_slices = tumor_crops[subject]
-                    possible_slices = (
-                        possible_slices[0][self.axis],
-                        possible_slices[1][self.axis] + 1,
-                    )
-                else:
-                    possible_slices = (
-                        0,
-                        self._data[subject].shape[self.axis + 2],
-                    )
-
-                current_timesteps = self._data[subject].shape[0]
-                for c, t in possible_sets.keys():
-                    pass
-
-                slc = [slice(None)] * 5
+                    crop = tumor_crops[subject]
+                    slc[self.axis] = slice(crop[0][self.axis], crop[1][self.axis] + 1)
 
                 # limit patches to tumor region
                 if self.patch_size is not None:
@@ -537,53 +540,30 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                     for ax in range(3):
                         if ax == self.axis:
                             continue
-                        slc[ax + 2] = slice(tumor_bbox[0][ax], tumor_bbox[1][ax] + 1)
+                        slc[ax] = slice(tumor_bbox[0][ax], tumor_bbox[1][ax] + 1)
 
-                for c, t in possible_sets.keys():
+                for i, (c, t) in enumerate(context_target_combinations):
 
                     if c + t > current_timesteps:
                         continue
 
-                    for i in range(possible_slices[0], possible_slices[1] + 1):
+                    main_node._children[i].add_child(
+                        PatientNode(
+                            (c, t),
+                            subject,
+                            current_timesteps,
+                            forward_only=self.forward_only,
+                            axis=self.axis,
+                            slc=tuple(slc),
+                        )
+                    )
 
-                        slc[self.axis + 2] = i
+            self._possible_sets = main_node
+            return main_node
 
-                        # we now draw all possible indices of context and target
-                        for index_subset in itertools.combinations(indices, c + t):
-                            # now we have a subset of indices that we need to assign to
-                            # context and target.
-                            # In forward-only mode, there is only one possibility
-                            if self.forward_only:
-                                slc[0] = tuple(index_subset[:c])
-                                context_slc = tuple(slc)
-                                slc[0] = tuple(index_subset[-t:])
-                                target_slc = tuple(slc)
-                                possible_sets[(c, t)].append(
-                                    (subject, context_slc, target_slc)
-                                )
-                            else:
-                                for t_idx in itertools.combinations(index_subset, t):
-                                    slc[0] = t_idx
-                                    target_slc = tuple(slc)
-                                    c_idx = tuple(
-                                        [
-                                            idx
-                                            for idx in index_subset
-                                            if idx not in t_idx
-                                        ]
-                                    )
-                                    slc[0] = c_idx
-                                    context_slc = tuple(slc)
-                                    possible_sets[(c, t)].append(
-                                        (subject, context_slc, target_slc)
-                                    )
+    def __len__(self) -> int:
 
-            self._possible_sets = possible_sets
-            return possible_sets
-
-    def __len__(self):
-
-        return sum(map(len, self.possible_sets)) // self.batch_size
+        return len(self.possible_sets) // self.batch_size
 
     def reset(self):
         """Resets the generator. Called automatically when infinite=True."""
@@ -631,49 +611,79 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if self.axis is not None:
             slices = []
         subjects = []
-        timesteps = []
+        timesteps_context = []
+        timesteps_target = []
         subject_associations = []
 
-        while len(context_data) < self.batch_size:
+        failure_counter = 0
+        while (
+            len(context_data) < self.batch_size
+            and failure_counter < self.failure_threshold
+        ):
 
             idx = idx % len(self.data_order)
 
-            subject, slc = self.possible_sets[self.data_order[idx]]
+            subject, context_slc, target_slc = self.possible_sets[
+                int(self.data_order[idx])
+            ]
 
+            # during iteration, it can happen that the context or target size changes.
+            # If it's a linear generator, we just finish the batch, otherwise we
+            # continue to try
             if len(context_data) > 0:
-                current_timesteps = slc[0].stop - slc[0].start
-                if current_timesteps != context_data[-1].shape[0]:
-                    idx += 1
-                    continue
+
+                current_context_size = len(context_slc[0])
+                if current_context_size != context_data[-1].shape[0]:
+                    if type(self) in (
+                        FutureContextGenerator2D,
+                        FutureContextGenerator3D,
+                    ):
+                        break
+                    else:
+                        failure_counter += 1
+                        continue
+
+                current_target_size = len(target_slc[0])
+                if current_target_size != target_data[-1].shape[0]:
+                    if type(self) in (
+                        FutureContextGenerator2D,
+                        FutureContextGenerator3D,
+                    ):
+                        break
+                    else:
+                        failure_counter += 1
+                        continue
 
             if self.axis is not None:
-                slices.append(slc[self.axis + 2])
+                slices.append(context_slc[self.axis + 2])
             subjects.append(subject)
-            timesteps.append(slc[0].start)
+            timesteps_context.append(context_slc[0])
+            timesteps_target.append(target_slc[0])
             subject_associations.append(self._all_subject_associations[subject])
+            context_days.append(self._all_scan_days[subject][list(context_slc[0])])
+            target_days.append(self._all_scan_days[subject][list(target_slc[0])])
 
-            # if you want to change how context and target are constructed (e.g. have
-            # more than 1 target timestep), this is the place.
-            context_days.append(self._all_scan_days[subject][slc[0]])
-            target_days.append(
-                self._all_scan_days[subject][slc[0].stop : slc[0].stop + 1]
-            )
-
-            context_data.append(self._data[subject][slc][:, :-1])
-            context_seg.append(self._data[subject][slc][:, -1:])
-            slc = list(slc)
-            slc[0] = slice(slc[0].stop, slc[0].stop + 1)
-            slc = tuple(slc)
-            target_data.append(self._data[subject][slc][:, :-1])
-            target_seg.append(self._data[subject][slc][:, -1:])
+            context_data.append(self._data[subject][context_slc][:, :-1])
+            context_seg.append(self._data[subject][context_slc][:, -1:])
+            target_data.append(self._data[subject][target_slc][:, :-1])
+            target_seg.append(self._data[subject][target_slc][:, -1:])
 
             idx += 1
+
+        if failure_counter >= self.failure_threshold:
+            info_str = "Tried to construct a random batch with context size {} and\
+                target size {}, but failed after {} tries. This probably happened\
+                because either of the two is very large and there are only few examples\
+                to construct the batch from".format(
+                context_data[-1].shape[0], target_data[-1].shape[0], failure_counter
+            )
+            raise RuntimeError(info_str)
 
         context = dict(
             data=np.stack(context_data),
             seg=np.stack(context_seg).astype(self.dtype_seg),
             scan_days=np.stack(context_days)[:, :, None].astype(np.float32),
-            timesteps=np.array(timesteps),
+            timesteps=np.array(timesteps_context)[:, :, None],
             subjects=np.array(subjects),
             subject_associations=np.array(subject_associations),
         )
@@ -682,6 +692,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         target = dict(
             data=np.stack(target_data),
             seg=np.stack(target_seg).astype(self.dtype_seg),
+            timesteps=np.array(timesteps_target)[:, :, None],
             scan_days=np.stack(target_days)[:, :, None].astype(np.float32),
         )
 
