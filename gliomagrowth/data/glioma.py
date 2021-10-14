@@ -744,7 +744,7 @@ class RandomFutureContextGenerator(FutureContextGenerator):
         if not self.was_initialized:
             self.reset()
         # the following doesn't actually guarantee that all examples have been seen,
-        # it's just for stopping after some time :)
+        # it's just for stopping/shuffling after some time :)
         if self.current_position >= len(self.possible_sets):
             self.reset()
             if not self.infinite:
@@ -893,13 +893,17 @@ class GliomaModule(pl.LightningDataModule):
         data_dir: The data directory. Data will only be loaded when generators are
             created.
         batch_size: The batch size :)
-        time_size: Number of consecutive timesteps that make up context/target pairs.
-            Target will always be the last timestep, context all but the last. Other
-            configurations are not supported atm, but should be easy to implement.
-            This can also be an iterable of multiple options. For example, if you want
-            to predict a future timestep from between 2 and 4 inputs, this should be
-            [3, 4, 5].
-        dim: Should be 2 or 3.
+        context_size: Number of context points. Either a fixed number or bounds for
+            random draws. For the latter, the upper limit is EXCLUSIVE like in
+            np.random.randint.
+        target_size: Number of target points. Either a fixed number or bounds for
+            random draws. For the latter, the upper limit is EXCLUSIVE like in
+            np.random.randint.
+        dim: This should be 2 or 3. If 3, the axis argument will be ignored!
+        forward_only: If this is active, the target points will strictly be in the
+            future.
+        context_larger_than_target: If this is active, there will always be more context
+            points than target points
         axis: Extract slices along this axis. Note that extraction along axes other than
             0 can be slow and it might be worth saving the data in a different
             orientation instead.
@@ -937,9 +941,12 @@ class GliomaModule(pl.LightningDataModule):
         self,
         data_dir: str,
         batch_size: int = 128,
-        time_size: Iterable[int] = (2, 3, 4, 5),
+        context_size: Union[int, Iterable[int]] = (2, 3, 4),
+        target_size: Union[int, Iterable[int]] = (1, 2),
         dim: int = 2,
-        axis: int = 0,
+        forward_only: bool = False,
+        context_larger_than_target: bool = True,
+        axis: Optional[int] = 0,
         split_N: int = 5,
         seed: int = 1,
         split_val: int = 3,
@@ -964,17 +971,16 @@ class GliomaModule(pl.LightningDataModule):
     ):
         super().__init__(dims=dim)
 
-        # if dim != 2:
-        #     raise NotImplementedError(
-        #         "At the moment, only two-dimensional dataloading is implemented!"
-        #     )
         if dim not in (2, 3):
             raise ValueError("'dim' mist be 2 or 3, but is {}.".format(dim))
 
         self.data_dir = data_dir
         self.batch_size = batch_size
-        self.time_size = time_size
+        self.context_size = context_size
+        self.target_size = target_size
         self.dim = dim
+        self.forward_only = forward_only
+        self.context_larger_than_context = context_larger_than_target
         self.axis = axis
         self.split_N = split_N
         self.seed = seed
@@ -1019,19 +1025,18 @@ class GliomaModule(pl.LightningDataModule):
 
     def train_dataloader(
         self,
-    ) -> Union[RandomFutureContextGenerator2D, RandomFutureContextGenerator3D]:
+    ) -> RandomFutureContextGenerator:
         """Construct training dataloader."""
 
-        if self.dim == 2:
-            gen = RandomFutureContextGenerator2D
-        else:
-            gen = RandomFutureContextGenerator3D
-
         train_data = load("r", subjects=self.subjects_train, ddir=self.data_dir)
-        train_gen = gen(
+        train_gen = RandomFutureContextGenerator(
             data=train_data,
             batch_size=self.batch_size,
-            time_size=self.time_size,
+            context_size=self.context_size,
+            target_size=self.target_size,
+            dim=self.dim,
+            forward_only=self.forward_only,
+            context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=int(1.5 * self.patch_size),  # for SpatialTransform rotations
             only_tumor=self.only_tumor,
@@ -1076,30 +1081,23 @@ class GliomaModule(pl.LightningDataModule):
 
     def val_dataloader(
         self,
-    ) -> Union[
-        FutureContextGenerator2D,
-        FutureContextGenerator3D,
-        RandomFutureContextGenerator2D,
-        RandomFutureContextGenerator3D,
-    ]:
+    ) -> Union[FutureContextGenerator, RandomFutureContextGenerator]:
         """Construct validation dataloader."""
 
         if self.validate_random:
-            if self.dim == 2:
-                gen = RandomFutureContextGenerator2D
-            else:
-                gen = RandomFutureContextGenerator3D
+            gen = RandomFutureContextGenerator
         else:
-            if self.dim == 2:
-                gen = FutureContextGenerator2D
-            else:
-                gen = FutureContextGenerator3D
+            gen = FutureContextGenerator
 
         val_data = load("r", subjects=self.subjects_val, ddir=self.data_dir)
         val_gen = gen(
             data=val_data,
             batch_size=self.batch_size,
-            time_size=self.time_size,
+            context_size=self.context_size,
+            target_size=(1,),
+            dim=self.dim,
+            forward_only=True,
+            context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=self.patch_size,
             only_tumor=self.only_tumor,
@@ -1114,19 +1112,18 @@ class GliomaModule(pl.LightningDataModule):
 
     def test_dataloader(
         self,
-    ) -> Union[FutureContextGenerator2D, FutureContextGenerator3D]:
+    ) -> FutureContextGenerator:
         """Construct test dataloader."""
 
-        if self.dim == 2:
-            gen = FutureContextGenerator2D
-        else:
-            gen = FutureContextGenerator3D
-
         test_data = load("r", subjects=self.subjects_test, ddir=self.data_dir)
-        test_gen = gen(
+        test_gen = FutureContextGenerator(
             data=test_data,
             batch_size=1,
-            time_size=self.time_size,
+            context_size=self.context_size,
+            target_size=(1,),
+            dim=self.dim,
+            forward_only=True,
+            context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=self.patch_size,
             only_tumor=self.only_tumor,
@@ -1149,8 +1146,11 @@ class GliomaModule(pl.LightningDataModule):
             parents=[parent_parser], add_help=False, conflict_handler="resolve"
         )
         parser.add_argument("--batch_size", type=int, default=128)
-        parser.add_argument("--time_size", type=int, nargs="+", default=(2, 3, 4, 5))
+        parser.add_argument("--context_size", type=int, nargs="+", default=(2, 3, 4))
+        parser.add_argument("--target_size", type=int, nargs="+", default=(1, 2))
         parser.add_argument("--dim", type=int, default=2)
+        parser.add_argument("--forward_only", type=str2bool, default=False)
+        parser.add_argument("--context_larger_than_target", type=str2bool, default=True)
         parser.add_argument("--axis", type=int, default=0)
         parser.add_argument("--split_N", type=int, default=5)
         parser.add_argument("--seed", type=int, default=1)
