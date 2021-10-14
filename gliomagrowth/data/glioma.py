@@ -364,8 +364,8 @@ class PatientNode(Node):
         return info_str
 
 
-class FutureContextGenerator2D(SlimDataLoaderBase):
-    """DataLoader for 2D data.
+class FutureContextGenerator(SlimDataLoaderBase):
+    """DataLoader for linear data loading.
 
     Will generate context/target pairs of data, essentially like input/GT,
     but each comes with the corresponding segmentation.
@@ -379,6 +379,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         target_size: Number of target points. Either a fixed number or bounds for
             random draws. For the latter, the upper limit is EXCLUSIVE like in
             np.random.randint.
+        dim: This should be 2 or 3. If 3, the axis argument will be ignored!
         forward_only: If this is active, the target points will strictly be in the
             future.
         context_larger_than_target: If this is active, there will always be more context
@@ -414,9 +415,10 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         batch_size: int,
         context_size: Union[int, Iterable[int]],
         target_size: Union[int, Iterable[int]],
+        dim: int = 2,
         forward_only: bool = False,
         context_larger_than_target: bool = True,
-        axis: int = 0,
+        axis: Optional[int] = 0,
         patch_size: int = 64,
         infinite: bool = False,
         subject_associations: Optional[Dict[str, str]] = None,
@@ -440,11 +442,17 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             ddir = data_dir
         self.ddir = ddir
 
+        if dim not in (2, 3):
+            raise ValueError(
+                "Can only work in 2D or 3D, but you requested {}D.".format(dim)
+            )
+
         self.context_size = context_size
         self.target_size = target_size
+        self.dim = dim
         self.forward_only = forward_only
         self.context_larger_than_target = context_larger_than_target
-        self.axis = axis
+        self.axis = axis if dim == 2 else None
         self.patch_size = patch_size
         self.infinite = infinite
         if subject_associations is None:
@@ -473,8 +481,6 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             self.number_of_threads_in_multithreaded = 1
 
         self.data_order = np.arange(len(self.possible_sets))
-
-        self.failure_threshold = 1000
 
     @property
     def possible_sets(self) -> Node:
@@ -518,7 +524,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                 current_timesteps = self._data[subject].shape[0]
 
                 # construct the bounds of the slice range
-                if self.only_tumor:
+                if self.only_tumor and self.dim == 2:
                     crop = tumor_crops[subject]
                     slc[self.axis] = slice(crop[0][self.axis], crop[1][self.axis] + 1)
 
@@ -538,7 +544,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
                         skip_axes=self.axis,
                     )
                     for ax in range(3):
-                        if ax == self.axis:
+                        if ax == self.axis and self.dim == 2:
                             continue
                         slc[ax] = slice(tumor_bbox[0][ax], tumor_bbox[1][ax] + 1)
 
@@ -588,13 +594,13 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         if not self.merge_context_target:
             return context, target
         else:
-            return ct_to_transformable(context, target)
+            return ct_to_transformable(context, target, keys=("scan_days", "timesteps"))
 
     def make_batch(self, idx: int) -> Tuple[Dict, Dict]:
         """Construct a batch from the specified position.
 
         Args:
-            idx: Current position in self.data_order.
+            idx: Current position in self.data_order. Ignored for random generators!
 
         Returns:
             A pair of context/target batch dictionaries.
@@ -608,24 +614,32 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         target_seg = []
         target_days = []
 
-        if self.axis is not None:
+        if self.dim == 2:
             slices = []
         subjects = []
         timesteps_context = []
         timesteps_target = []
         subject_associations = []
 
-        failure_counter = 0
-        while (
-            len(context_data) < self.batch_size
-            and failure_counter < self.failure_threshold
-        ):
+        # for random generator
+        if hasattr(self, "rs"):
+            # self.rs.choice(self.possible_sets._children) doesn't work!!
+            current_node = self.rs.randint(len(self.possible_sets._children))
+            current_node = self.possible_sets._children[current_node]
+
+        while len(context_data) < self.batch_size:
 
             idx = idx % len(self.data_order)
 
-            subject, context_slc, target_slc = self.possible_sets[
-                int(self.data_order[idx])
-            ]
+            if hasattr(self, "rs"):
+                rand_index = self.rs.randint(
+                    len(current_node)
+                )  # duplicates are possible!
+                subject, context_slc, target_slc = current_node[rand_index]
+            else:
+                subject, context_slc, target_slc = self.possible_sets[
+                    int(self.data_order[idx])
+                ]
 
             # during iteration, it can happen that the context or target size changes.
             # If it's a linear generator, we just finish the batch, otherwise we
@@ -634,27 +648,13 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
 
                 current_context_size = len(context_slc[0])
                 if current_context_size != context_data[-1].shape[0]:
-                    if type(self) in (
-                        FutureContextGenerator2D,
-                        FutureContextGenerator3D,
-                    ):
-                        break
-                    else:
-                        failure_counter += 1
-                        continue
+                    break
 
                 current_target_size = len(target_slc[0])
                 if current_target_size != target_data[-1].shape[0]:
-                    if type(self) in (
-                        FutureContextGenerator2D,
-                        FutureContextGenerator3D,
-                    ):
-                        break
-                    else:
-                        failure_counter += 1
-                        continue
+                    break
 
-            if self.axis is not None:
+            if self.dim == 2:
                 slices.append(context_slc[self.axis + 2])
             subjects.append(subject)
             timesteps_context.append(context_slc[0])
@@ -670,15 +670,6 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
 
             idx += 1
 
-        if failure_counter >= self.failure_threshold:
-            info_str = "Tried to construct a random batch with context size {} and\
-                target size {}, but failed after {} tries. This probably happened\
-                because either of the two is very large and there are only few examples\
-                to construct the batch from".format(
-                context_data[-1].shape[0], target_data[-1].shape[0], failure_counter
-            )
-            raise RuntimeError(info_str)
-
         context = dict(
             data=np.stack(context_data),
             seg=np.stack(context_seg).astype(self.dtype_seg),
@@ -687,7 +678,7 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
             subjects=np.array(subjects),
             subject_associations=np.array(subject_associations),
         )
-        if self.axis is not None:
+        if self.dim == 2:
             context["slices"] = np.array(slices)
         target = dict(
             data=np.stack(target_data),
@@ -711,66 +702,8 @@ class FutureContextGenerator2D(SlimDataLoaderBase):
         return context, target
 
 
-class FutureContextGenerator3D(FutureContextGenerator2D):
-    """Same as FutureContextGenerator2D, but in 3D."""
-
-    def __init__(self, *args, **kwargs):
-
-        super().__init__(*args, **kwargs)
-        self.axis = None
-
-    @property
-    def possible_sets(self) -> List[Tuple[str, Tuple]]:
-        """Construct a list of all possible (subject, slice) pairs that are allowed
-        for the configuration of the generator.
-        """
-
-        try:
-            return self._possible_sets
-        except AttributeError:
-
-            if self.only_tumor:
-                with open(os.path.join(self.ddir, "multi_tumor_crop.json"), "r") as f:
-                    tumor_crops = json.load(f)
-
-            sets = []
-            for time_size in self.time_size:
-                for subject in sorted(self._data.keys()):
-                    current_timesteps = self._data[subject].shape[0]
-                    if current_timesteps <= time_size:
-                        continue
-                    for t in range(current_timesteps - time_size):
-                        slc = [
-                            slice(None),
-                        ] * 5
-                        slc[0] = slice(t, t + time_size)
-                        if self.patch_size is not None:
-                            if self.only_tumor:
-                                tumor_bbox = tumor_crops[subject]
-                            else:
-                                tumor_bbox = [[], []]
-                                for i in range(3):
-                                    tumor_bbox[0].append(0)
-                                    tumor_bbox[1].append(
-                                        self._data[subject].shape[i + 2]
-                                    )
-                            tumor_bbox = modify_bbox(
-                                *tumor_bbox,
-                                self.patch_size,
-                                self._data[subject].shape[2:],
-                            )
-                            for ax in range(3):
-                                slc[ax + 2] = slice(
-                                    tumor_bbox[0][ax], tumor_bbox[1][ax] + 1
-                                )
-                        sets.append((subject, tuple(slc)))
-
-            self._possible_sets = sets
-            return sets
-
-
-class RandomFutureContextGenerator2D(FutureContextGenerator2D):
-    """Same as FutureContextGenerator2D, but shuffles data.
+class RandomFutureContextGenerator(FutureContextGenerator):
+    """Randomly draws examples instead of linearly iterating.
 
     Args:
         random_date_shift: Randomly shift dates (drawn uniformly). This is applied
@@ -803,7 +736,6 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
             self.thread_id
             + self.num_restarted * self.number_of_threads_in_multithreaded
         )
-        self.rs.shuffle(self.data_order)
         self.num_restarted = self.num_restarted + 1
 
     def generate_train_batch(self) -> Union[Tuple[Dict, Dict], Dict]:
@@ -811,6 +743,8 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
 
         if not self.was_initialized:
             self.reset()
+        # the following doesn't actually guarantee that all examples have been seen,
+        # it's just for stopping after some time :)
         if self.current_position >= len(self.possible_sets):
             self.reset()
             if not self.infinite:
@@ -839,86 +773,7 @@ class RandomFutureContextGenerator2D(FutureContextGenerator2D):
         if not self.merge_context_target:
             return context, target
         else:
-            return ct_to_transformable(context, target)
-
-
-class RandomFutureContextGenerator3D(FutureContextGenerator3D):
-    """Same as FutureContextGenerator3D, but shuffles data.
-
-    Args:
-        random_date_shift: Randomly shift dates (drawn uniformly). This is applied
-            AFTER normalize_date_factor!
-        random_rotation: Random 90 degree rotations. You can also do this with data
-            augmentation, but if you only want these rotations, it's more convenient
-            to do internally.
-
-    """
-
-    def __init__(
-        self,
-        *args,
-        random_date_shift: Iterable[float] = (-1.0, 1.0),
-        random_rotation: bool = True,
-        **kwargs,
-    ):
-
-        super().__init__(*args, **kwargs)
-
-        self.random_date_shift = random_date_shift
-        self.random_rotation = random_rotation
-        self.num_restarted = 0
-
-    def reset(self):
-        """Resets the generator. Called automatically when infinite=True."""
-
-        super().reset()
-        self.rs = np.random.RandomState(
-            self.thread_id
-            + self.num_restarted * self.number_of_threads_in_multithreaded
-        )
-        self.rs.shuffle(self.data_order)
-        self.num_restarted = self.num_restarted + 1
-
-    def generate_train_batch(self) -> Union[Tuple[Dict, Dict], Dict]:
-        """This is called internally when you do next() on the generator."""
-
-        if not self.was_initialized:
-            self.reset()
-        if self.current_position >= len(self.possible_sets):
-            self.reset()
-            if not self.infinite:
-                raise StopIteration
-        context, target = self.make_batch(self.current_position)
-        self.current_position += (
-            self.number_of_threads_in_multithreaded * self.batch_size
-        )
-
-        if self.random_date_shift is not None:
-            shift = self.rs.uniform(
-                *self.random_date_shift, size=(context["scan_days"].shape[0], 1, 1)
-            )
-            context["scan_days"] = context["scan_days"] + shift
-            target["scan_days"] = target["scan_days"] + shift
-
-        if self.random_rotation:
-            for axes in ((2, 3), (2, 4), (3, 4)):
-                rot = self.rs.randint(0, 4, size=(context["data"].shape[0],))
-                for r, num_rot in enumerate(rot):
-                    context["data"][r] = np.rot90(
-                        context["data"][r], k=num_rot, axes=axes
-                    )
-                    context["seg"][r] = np.rot90(
-                        context["seg"][r], k=num_rot, axes=axes
-                    )
-                    target["data"][r] = np.rot90(
-                        target["data"][r], k=num_rot, axes=axes
-                    )
-                    target["seg"][r] = np.rot90(target["seg"][r], k=num_rot, axes=axes)
-
-        if not self.merge_context_target:
-            return context, target
-        else:
-            return ct_to_transformable(context, target)
+            return ct_to_transformable(context, target, keys=("scan_days", "timesteps"))
 
 
 def get_train_transforms(
