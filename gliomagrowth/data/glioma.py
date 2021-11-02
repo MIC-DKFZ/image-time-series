@@ -1195,6 +1195,8 @@ class GliomaModule(pl.LightningDataModule):
         seg_cmap: Optional[mp.colors.Colormap] = mp.cm.viridis,
         figsize: int = 2,
         axis: int = 0,
+        n_examples: int = 1,
+        **figure_kwargs,
     ) -> mp.figure.Figure:
         """Show examples from all dataloaders.
 
@@ -1207,6 +1209,7 @@ class GliomaModule(pl.LightningDataModule):
             seg_cmap: Colormap for the segmentation.
             figsize: Size of an individual panel in the figure.
             axis: Use this axis for 3D loaders.
+            n_examples: How many examples to show from each loader.
 
         Returns:
             A figure object
@@ -1214,25 +1217,40 @@ class GliomaModule(pl.LightningDataModule):
         """
 
         batches = [next(dl) for dl in dataloaders]
+        n_examples = min(n_examples, batches[0]["data"].shape[0])
+        nrows = 2 * len(batches) * n_examples
+        ncols = max([b["timesteps"].shape[1] for b in batches])
 
-        nrows = 2 * len(batches)
-        ncols = max([b["data"].shape[1] // 4 for b in batches])
-        fig, ax = plt.subplots(nrows, ncols, figsize=(figsize * ncols, figsize * nrows))
+        fig, ax = plt.subplots(
+            nrows, ncols, figsize=(figsize * ncols, figsize * nrows), **figure_kwargs
+        )
         if ax.ndim == 1:
             ax = ax[:, None]
 
         for t in range(ncols):
             for b, batch in enumerate(batches):
-                if t * 4 < batch["data"].shape[1]:
-                    data_current = batch["data"][0, t * 4 + channel]
-                    seg_current = batch["seg"][0, t]
-                    if data_current.ndim == 3:
-                        slc = [slice(None)] * 3
-                        slc[axis] = data_current.shape[axis] // 2
-                        data_current = data_current[tuple(slc)]
-                        seg_current = seg_current[tuple(slc)]
-                    ax[2 * b, t].imshow(data_current, cmap="gray")
-                    ax[2 * b + 1, t].imshow(seg_current, cmap=seg_cmap, vmin=0, vmax=3)
+                if t < batch["timesteps"].shape[1]:
+                    for e in range(n_examples):
+                        data_current = batch["data"][e, t * 4 + channel]
+                        seg_current = batch["seg"][e, t]
+                        if data_current.ndim == 3:
+                            slc = [slice(None)] * 3
+                            slc[axis] = data_current.shape[axis] // 2
+                            data_current = data_current[tuple(slc)]
+                            seg_current = seg_current[tuple(slc)]
+                        ax[2 * n_examples * b + 2 * e, t].imshow(
+                            data_current, cmap="gray"
+                        )
+                        ax[2 * n_examples * b + 2 * e, t].text(
+                            0,
+                            0,
+                            "t={:.2f}".format(batch["scan_days"][e, t]),
+                            verticalalignment="top",
+                            color="white",
+                        )
+                        ax[2 * n_examples * b + 2 * e + 1, t].imshow(
+                            seg_current, cmap=seg_cmap, vmin=0, vmax=3
+                        )
 
         for r in range(ax.shape[0]):
             for c in range(ax.shape[1]):
