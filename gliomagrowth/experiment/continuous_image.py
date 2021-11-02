@@ -756,7 +756,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         At the moment only logging to Visdom and to disk is supported.
 
         Args:
-            tensor: The data.
+            tensor: The data. We take the last element along the second axis.
             name: Should describe what you're trying to log.
             epoch: Prepends "epoch{epoch}_" to the name.
             batch_idx: Prepends "step{batch_idx}_" to the name.
@@ -954,7 +954,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             samples = self.model.sample(
                 8,
                 log_tensor["context_query"][:8],
-                log_tensor["target_query"][:8, -1:],
+                log_tensor["target_query"][:8, -1:],  # want just 1 target point
                 log_tensor["context_image"][:8],
                 log_tensor["context_seg"][:8] if self.hparams.use_context_seg else None,
                 None,
@@ -995,7 +995,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
     def test_step(
         self, batch: Dict[str, np.ndarray], batch_idx: int
     ) -> Tuple[str, float, float, float, float, float, float, float]:
-        """Test step.
+        """Test step. Note that this assumes that there is only one target point.
+        The data module should be configured accordingly.
 
         Args:
             batch: A dictionary that should at least have "scan_days", "data", "seg".
