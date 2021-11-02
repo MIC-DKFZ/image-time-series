@@ -218,7 +218,7 @@ class PatientNode(Node):
         time_size: Size of the time axis for this subject.
         forward_only: If active, target points will always come after context points.
         axis: If provided, the node will also iterate over spatial slices along this
-            axis.
+            axis (0 = X etc.).
         slc: We're assuming 5D shapes (T, C, X, Y, Z). If you provide this, you can
             limit the (X, Y, Z) extent that's used. If this is None, slice(None) will
             be used instead. If axis is provided, it will use the corresponding slice
@@ -322,6 +322,8 @@ class PatientNode(Node):
         slice_index, draw_index, perm_index = np.unravel_index(
             index, (num_slices, num_draws, num_permutations)
         )
+        if self.is_2d:
+            slice_index += self.slc[self.axis].start
         time_indices = list(itertools.combinations(np.arange(self.time_size), c + t))[
             draw_index
         ]
@@ -373,12 +375,8 @@ class FutureContextGenerator(SlimDataLoaderBase):
     Args:
         data: The data to generate patches from. Use load() to construct.
         batch_size: The batch size :)
-        context_size: Number of context points. Either a fixed number or bounds for
-            random draws. For the latter, the upper limit is EXCLUSIVE like in
-            np.random.randint.
-        target_size: Number of target points. Either a fixed number or bounds for
-            random draws. For the latter, the upper limit is EXCLUSIVE like in
-            np.random.randint.
+        context_size: Number of context points.
+        target_size: Number of target points.
         dim: This should be 2 or 3. If 3, the axis argument will be ignored!
         forward_only: If this is active, the target points will strictly be in the
             future.
