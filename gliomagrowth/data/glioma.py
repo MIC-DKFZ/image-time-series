@@ -217,12 +217,16 @@ class PatientNode(Node):
         subject_id: Subject identifier string.
         time_size: Size of the time axis for this subject.
         forward_only: If active, target points will always come after context points.
+        next_only: In forward_only mode, only the very next time point is used as
+            target. This will not trigger forward_only and will only work if the
+            target size is 1. Otherwise it's ignored.
         axis: If provided, the node will also iterate over spatial slices along this
             axis (0 = X etc.).
         slc: We're assuming 5D shapes (T, C, X, Y, Z). If you provide this, you can
             limit the (X, Y, Z) extent that's used. If this is None, slice(None) will
             be used instead. If axis is provided, it will use the corresponding slice
             object to iterate over, so for 2D operation it's required!
+        time_offset: This will be added to the time indices.
 
     """
 
@@ -232,8 +236,10 @@ class PatientNode(Node):
         subject_id: str,
         time_size: int,
         forward_only: bool = False,
+        next_only: bool = False,
         axis: Optional[int] = None,
         slc: Optional[Iterable[slice]] = None,
+        time_offset: int = 0,
     ):
 
         super().__init__()
@@ -242,8 +248,10 @@ class PatientNode(Node):
         self.subject_id = subject_id
         self.time_size = time_size
         self.forward_only = forward_only
+        self.next_only = next_only
         self.axis = axis
         self.slc = slc
+        self.time_offset = time_offset
 
         if self.is_2d:
             if self.slc[self.axis].start is None or self.slc[self.axis].stop is None:
@@ -263,6 +271,7 @@ class PatientNode(Node):
         self.subject_id = node.subject_id
         self.time_size = node.time_size
         self.forward_only = node.forward_only
+        self.next_only = node.next_only
         self.axis = node.axis
         self.slc = node.slc
         self.data = node.data
@@ -337,8 +346,8 @@ class PatientNode(Node):
 
         context_slc = [slice(None)] * 5
         target_slc = [slice(None)] * 5
-        context_slc[0] = tuple(context_indices)
-        target_slc[0] = tuple(target_indices)
+        context_slc[0] = tuple(ci + self.time_offset for ci in context_indices)
+        target_slc[0] = tuple(ti + self.time_offset for ti in target_indices)
         if self.slc is not None:
             for i in range(3):
                 context_slc[i + 2] = self.slc[i]
@@ -351,8 +360,12 @@ class PatientNode(Node):
 
     def __repr__(self) -> str:
 
-        info_str = "({},{}) {} t{}".format(
-            self.ct[0], self.ct[1], self.subject_id, self.time_size
+        info_str = "({},{}) {} t{}-{}".format(
+            self.ct[0],
+            self.ct[1],
+            self.subject_id,
+            self.time_offset,
+            self.time_size - 1 + self.time_offset,
         )
         if self.forward_only:
             info_str += "forward"
@@ -380,6 +393,8 @@ class FutureContextGenerator(SlimDataLoaderBase):
         dim: This should be 2 or 3. If 3, the axis argument will be ignored!
         forward_only: If this is active, the target points will strictly be in the
             future.
+        fixed_forward: If in forward mode, this results in dense blocks of context and
+            target points.
         context_larger_than_target: If this is active, there will always be more context
             points than target points
         axis: Extract slices along this axis. Note that extraction along axes other than
@@ -415,6 +430,7 @@ class FutureContextGenerator(SlimDataLoaderBase):
         target_size: Union[int, Iterable[int]],
         dim: int = 2,
         forward_only: bool = False,
+        fixed_forward: bool = False,
         context_larger_than_target: bool = True,
         axis: Optional[int] = 0,
         patch_size: int = 64,
@@ -449,6 +465,7 @@ class FutureContextGenerator(SlimDataLoaderBase):
         self.target_size = target_size
         self.dim = dim
         self.forward_only = forward_only
+        self.fixed_forward = fixed_forward
         self.context_larger_than_target = context_larger_than_target
         self.axis = axis if dim == 2 else None
         self.patch_size = patch_size
@@ -551,16 +568,33 @@ class FutureContextGenerator(SlimDataLoaderBase):
                     if c + t > current_timesteps:
                         continue
 
-                    main_node._children[i].add_child(
-                        PatientNode(
-                            (c, t),
-                            subject,
-                            current_timesteps,
-                            forward_only=self.forward_only,
-                            axis=self.axis,
-                            slc=tuple(slc),
+                    if self.fixed_forward and self.forward_only:
+
+                        for j in range(current_timesteps - c - t + 1):
+                            main_node._children[i].add_child(
+                                PatientNode(
+                                    (c, t),
+                                    subject,
+                                    c + t,
+                                    forward_only=True,
+                                    axis=self.axis,
+                                    slc=tuple(slc),
+                                    time_offset=j,
+                                )
+                            )
+
+                    else:
+
+                        main_node._children[i].add_child(
+                            PatientNode(
+                                (c, t),
+                                subject,
+                                current_timesteps,
+                                forward_only=self.forward_only,
+                                axis=self.axis,
+                                slc=tuple(slc),
+                            )
                         )
-                    )
 
             self._possible_sets = main_node
             return main_node
@@ -900,6 +934,8 @@ class GliomaModule(pl.LightningDataModule):
         dim: This should be 2 or 3. If 3, the axis argument will be ignored!
         forward_only: If this is active, the target points will strictly be in the
             future.
+        fixed_forward: If in forward mode, this results in dense blocks of context and
+            target points.
         context_larger_than_target: If this is active, there will always be more context
             points than target points
         axis: Extract slices along this axis. Note that extraction along axes other than
@@ -943,6 +979,7 @@ class GliomaModule(pl.LightningDataModule):
         target_size: Union[int, Iterable[int]] = (1, 2),
         dim: int = 2,
         forward_only: bool = False,
+        fixed_forward: bool = False,
         context_larger_than_target: bool = True,
         axis: Optional[int] = 0,
         split_N: int = 5,
@@ -978,6 +1015,7 @@ class GliomaModule(pl.LightningDataModule):
         self.target_size = target_size
         self.dim = dim
         self.forward_only = forward_only
+        self.fixed_forward = fixed_forward
         self.context_larger_than_context = context_larger_than_target
         self.axis = axis
         self.split_N = split_N
@@ -1034,6 +1072,7 @@ class GliomaModule(pl.LightningDataModule):
             target_size=self.target_size,
             dim=self.dim,
             forward_only=self.forward_only,
+            fixed_forward=self.fixed_forward,
             context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=int(1.5 * self.patch_size),  # for SpatialTransform rotations
@@ -1095,6 +1134,7 @@ class GliomaModule(pl.LightningDataModule):
             target_size=(1,),
             dim=self.dim,
             forward_only=True,
+            fixed_forward=self.fixed_forward,
             context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=self.patch_size,
@@ -1121,6 +1161,7 @@ class GliomaModule(pl.LightningDataModule):
             target_size=(1,),
             dim=self.dim,
             forward_only=True,
+            fixed_forward=self.fixed_forward,
             context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=self.patch_size,
@@ -1148,6 +1189,7 @@ class GliomaModule(pl.LightningDataModule):
         parser.add_argument("--target_size", type=int, nargs="+", default=(1, 2))
         parser.add_argument("--dim", type=int, default=2)
         parser.add_argument("--forward_only", type=str2bool, default=False)
+        parser.add_argument("--fixed_forward", type=str2bool, default=False)
         parser.add_argument("--context_larger_than_target", type=str2bool, default=True)
         parser.add_argument("--axis", type=int, default=0)
         parser.add_argument("--split_N", type=int, default=5)
