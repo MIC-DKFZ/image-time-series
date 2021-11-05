@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import matplotlib as mp
 from typing import Optional, Union, List, Dict, Tuple, Iterable
-from math import factorial, comb
+from scipy.special import comb
 
 from batchgenerators.dataloading.data_loader import SlimDataLoaderBase
 from batchgenerators.dataloading import MultiThreadedAugmenter, SingleThreadedAugmenter
@@ -285,11 +285,11 @@ class PatientNode(Node):
         # in forward-only mode, the order is fixed (target comes after context),
         # so it's just about how many subsets we can draw where the elements are
         # indistinguishable.
-        possibilities = comb(self.time_size, c + t)
+        possibilities = comb(self.time_size, c + t, exact=True)
 
         # if not in forward-only mode, we can again draw t elements out of the subset
         if not self.forward_only:
-            possibilities *= comb(c + t, t)
+            possibilities *= comb(c + t, t, exact=True)
 
         # if we work in 2D, we can do this for every slice!
         if self.is_2d:
@@ -318,13 +318,13 @@ class PatientNode(Node):
             num_slices = 1
 
         # number of ways to draw context + target indices
-        num_draws = comb(self.time_size, c + t)
+        num_draws = comb(self.time_size, c + t, exact=True)
 
         # number of ways to assign a draw to context and target
         if self.forward_only:
             num_permutations = 1
         else:
-            num_permutations = comb(c + t, t)
+            num_permutations = comb(c + t, t, exact=True)
 
         # now imagine an array of shape (num_slices, num_draws, num_permutations).
         # we convert the input index to an array index
