@@ -673,9 +673,9 @@ class FutureContextGenerator(SlimDataLoaderBase):
                     int(self.data_order[idx])
                 ]
 
-            # during iteration, it can happen that the context or target size changes.
-            # If it's a linear generator, we just finish the batch, otherwise we
-            # continue to try
+            # During iteration, it can happen that the context or target size changes.
+            # We just finish the batch in that case. For random generators the sizes
+            # are selected for the entire batch!
             if len(context_data) > 0:
 
                 current_context_size = len(context_slc[0])
@@ -980,6 +980,8 @@ class GliomaModule(pl.LightningDataModule):
         dim: int = 2,
         forward_only: bool = False,
         fixed_forward: bool = False,
+        forward_only_test: bool = True,
+        fixed_forward_test: bool = True,
         context_larger_than_target: bool = True,
         axis: Optional[int] = 0,
         split_N: int = 5,
@@ -1016,6 +1018,8 @@ class GliomaModule(pl.LightningDataModule):
         self.dim = dim
         self.forward_only = forward_only
         self.fixed_forward = fixed_forward
+        self.forward_only_test = forward_only_test
+        self.fixed_forward_test = fixed_forward_test
         self.context_larger_than_context = context_larger_than_target
         self.axis = axis
         self.split_N = split_N
@@ -1133,8 +1137,8 @@ class GliomaModule(pl.LightningDataModule):
             context_size=self.context_size,
             target_size=(1,),
             dim=self.dim,
-            forward_only=True,
-            fixed_forward=self.fixed_forward,
+            forward_only=self.forward_only_test,
+            fixed_forward=self.fixed_forward_test,
             context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
             patch_size=self.patch_size,
@@ -1160,7 +1164,7 @@ class GliomaModule(pl.LightningDataModule):
             context_size=self.context_size,
             target_size=(1,),
             dim=self.dim,
-            forward_only=True,
+            forward_only=self.forward_only_test,
             fixed_forward=self.fixed_forward,
             context_larger_than_target=self.context_larger_than_context,
             axis=self.axis,
@@ -1190,6 +1194,8 @@ class GliomaModule(pl.LightningDataModule):
         parser.add_argument("--dim", type=int, default=2)
         parser.add_argument("--forward_only", type=str2bool, default=False)
         parser.add_argument("--fixed_forward", type=str2bool, default=False)
+        parser.add_argument("--forward_only_test", type=str2bool, default=True)
+        parser.add_argument("--fixed_forward_test", type=str2bool, default=True)
         parser.add_argument("--context_larger_than_target", type=str2bool, default=True)
         parser.add_argument("--axis", type=int, default=0)
         parser.add_argument("--split_N", type=int, default=5)

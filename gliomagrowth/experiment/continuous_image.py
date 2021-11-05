@@ -123,7 +123,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         criterion_latent_reduction: str = "mean",
         criterion_latent_weight: float = 0.1,
         optimizer: str = "adam",
-        learning_rate: float = 0.0001,
+        learning_rate: float = 0.01,
         step_lr: bool = False,
         step_lr_gamma: float = 0.99,  # every epoch
         reduce_lr_on_plateau: bool = False,
@@ -149,8 +149,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
         model_norm_depth_decoder: int = 0,
         model_pool: str = "avgpool",
         model_pool_kwargs: Optional[dict] = None,
-        model_upsample: str = "upsample",
-        model_upsample_kwargs: Optional[dict] = None,
+        model_upsample: str = "convtranspose",
+        model_upsample_kwargs: Optional[dict] = dict(
+            kernel_size=4, stride=2, padding=1
+        ),
         model_initial_upsample: str = "upsample",
         model_initial_upsample_kwargs: Optional[dict] = None,
         model_dropout: Optional[str] = None,
@@ -1169,9 +1171,12 @@ class ContinuousTumorGrowth(pl.LightningModule):
             nargs="+",
             default=None,
         )
-        parser.add_argument("--model_upsample", type=str, default="upsample")
+        parser.add_argument("--model_upsample", type=str, default="convtranspose")
         parser.add_argument(
-            "--model_upsample_kwargs", action=DictArgument, nargs="+", default=None
+            "--model_upsample_kwargs",
+            action=DictArgument,
+            nargs="+",
+            default=dict(kernel_size=4, stride=2, padding=1),
         )
         parser.add_argument("--model_initial_upsample", type=str, default="upsample")
         parser.add_argument(
