@@ -238,7 +238,7 @@ def unmerge_axes(
 def ct_to_transformable(
     context: Dict[str, Union[np.ndarray, torch.Tensor]],
     target: Dict[str, Union[np.ndarray, torch.Tensor]],
-    keys: Iterable[str] = ("scan_days",),
+    keys: Iterable[str] = ("scan_days", "timesteps"),
 ) -> Dict[str, Union[np.ndarray, torch.Tensor]]:
     """Convert a pair of context/target batch dictionaries to a single one.
 
@@ -269,7 +269,7 @@ def ct_to_transformable(
 
 def transformable_to_ct(
     batch: Dict[str, Union[np.ndarray, torch.Tensor]],
-    keys: Iterable[str] = ("scan_days",),
+    keys: Iterable[str] = ("scan_days", "timesteps"),
     make_new: bool = False,
 ) -> Tuple[
     Dict[str, Union[np.ndarray, torch.Tensor]],
@@ -660,10 +660,16 @@ class Node:
 
     def __getitem__(self, index: int) -> Node:
 
-        if not isinstance(index, int):
-            raise ValueError("__getitem__ is only implemented for integers!")
+        if not isinstance(index, (int, slice)):
+            raise ValueError(
+                "__getitem__ is only implemented for integers and slice objects!"
+            )
 
         len_self = len(self)
+
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len_self)
+            return [self[i] for i in range(start, stop, step)]
 
         # check that index works
         if index < 0:

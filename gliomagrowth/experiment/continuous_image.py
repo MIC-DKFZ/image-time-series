@@ -533,7 +533,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
         log_tensor = {}
         if return_all:
             log_tensor["subjects"] = context["subjects"]
-            log_tensor["timesteps"] = context["timesteps"]
+            log_tensor["context_timesteps"] = context["timesteps"]
+            log_tensor["target_timesteps"] = target["timesteps"]
+            log_tensor["context_scan_days"] = context["scan_days"]
+            log_tensor["target_scan_days"] = target["scan_days"]
             log_tensor["context_query"] = context_query
             log_tensor["target_query"] = target_query
             log_tensor["context_image"] = context_image
@@ -997,8 +1000,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
     def test_step(
         self, batch: Dict[str, np.ndarray], batch_idx: int
     ) -> Tuple[str, float, float, float, float, float, float, float]:
-        """Test step. Note that this assumes that there is only one target point.
-        The data module should be configured accordingly.
+        """Test step. Note that this assumes that there is only one target point and
+        that the test batch size is 1. The data module should be configured accordingly.
 
         Args:
             batch: A dictionary that should at least have "scan_days", "data", "seg".
@@ -1065,11 +1068,11 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         subject_info = [
             log_tensor["subjects"][0],
-            str(log_tensor["timesteps"][0] + log_tensor["context_query"].shape[1]),
-            "it" + str(log_tensor["context_query"].shape[1]),
+            "c" + ",".join(map(str, log_tensor["context_timesteps"][0, :, 0])),
+            "t" + ",".join(map(str, log_tensor["target_timesteps"][0, :, 0])),
         ]
         if "slices" in log_tensor:
-            subject_info.insert(-1, str(log_tensor["slices"][0]))
+            subject_info.append("slc" + str(log_tensor["slices"][0]))
         subject_info = "_".join(subject_info)
 
         result = np.array(
@@ -1097,7 +1100,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
     def test_epoch_end(self, outputs):
 
         columns = [
-            "Subject and Timestep",
+            "Info",
             "GT Volume",
             "Loss Task",
             "Loss Latent",
@@ -1118,7 +1121,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             + columns_best_volume_dice
             + columns_best_dice,
         )
-        arr = arr.set_index("Subject and Timestep")
+        arr = arr.set_index("Info")
         arr.to_csv(os.path.join(self.trainer._default_root_dir, "test.csv"))
 
         arr = arr.mean().to_dict()
