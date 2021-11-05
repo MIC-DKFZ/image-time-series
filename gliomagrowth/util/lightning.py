@@ -465,6 +465,7 @@ def make_default_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--visdom", type=str, default=None)
     parser.add_argument("--mlflow", type=str, default=None)
+    parser.add_argument("--group", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None, help="Path to resume from")
     parser.add_argument("--test", action="store_true", help="Run test.")
     parser.add_argument(
@@ -588,6 +589,19 @@ def run_experiment(
     # Logging
     mlflow.set_tracking_uri(args.mlflow)
     mlflow.set_experiment(name)
+    if args.group is not None:
+        # look for run group or create if it doesn't exist
+        exp_id = mlflow.get_experiment_by_name(name).experiment_id
+        run_group = mlflow.search_runs(
+            experiment_ids=[exp_id],
+            filter_string='tag.mlflow.runName="{}"'.format(args.group),
+        )
+        if len(run_group) > 0:
+            group_id = run_group["run_id"][0]
+        else:
+            mlflow.start_run(run_name=args.group)
+            group_id = mlflow.active_run().info.run_id
+            mlflow.end_run()
     loggers = [
         pl.loggers.MLFlowLogger(
             experiment_name=name,
@@ -598,9 +612,11 @@ def run_experiment(
     if args.visdom:
         loggers.append(VisdomLogger(name=name, port=args.visdom))
     mlflow.start_run(run_id=loggers[0].run_id)
+    # some hacking
     if args.name != name:
-        # illegal :)
         mlflow.set_tag("mlflow.runName", args.name)
+    if args.group is not None:
+        mlflow.set_tag("mlflow.parentRunId", group_id)
     args.default_root_dir = mlflow.active_run().info.artifact_uri[7:]
 
     # seeding first
