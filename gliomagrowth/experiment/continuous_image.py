@@ -6,6 +6,7 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import torch
+from torch._C import device
 from torch.optim import lr_scheduler
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
@@ -434,7 +435,11 @@ class ContinuousTumorGrowth(pl.LightningModule):
         return self.model(*x, **xx)
 
     def step(
-        self, batch: Dict[str, np.ndarray], batch_idx: int, return_all: bool = False
+        self,
+        batch: Dict[str, np.ndarray],
+        batch_idx: int,
+        return_all: bool = False,
+        loss_aggregate: bool = True,
     ) -> Tuple[torch.Tensor, dict, Optional[dict]]:
         """Base step that is used by train, val and test.
 
@@ -443,6 +448,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
             batch_idx: Not used.
             return_all: Also return a dict with input and output tensors. Use this to
                 get the data for visualization and similar.
+            loss_aggregate: If True, aggregate the loss over the batch. This is for
+                testing purposes.
 
         Returns:
             (
@@ -493,20 +500,19 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         # prediction/task loss
         if not self.hparams.criterion_task_onehot:
-            loss_task = (
-                self.criterion_task(
-                    stack_batch(prediction),
-                    stack_batch(torch.argmax(target_seg, 2, keepdim=False)),
-                )
-                .mean(0)
-                .sum()  # when reduction is none, we do sum and batch average
+            loss_task = self.criterion_task(
+                stack_batch(prediction),
+                stack_batch(torch.argmax(target_seg, 2, keepdim=False)),
             )
         else:
-            loss_task = (
-                self.criterion_task(stack_batch(prediction), stack_batch(target_seg))
-                .mean(0)
-                .sum()  # when reduction is none, we do sum and batch average
+            loss_task = self.criterion_task(
+                stack_batch(prediction), stack_batch(target_seg)
             )
+        # when reduction is none, we do sum and batch average
+        while loss_task.dim() > 1:
+            loss_task = loss_task.sum(-1)
+        if loss_aggregate:
+            loss_task = loss_task.mean(0)
         log = {"loss_task": loss_task}
 
         # during validation we need to manually encode the posterior
@@ -520,9 +526,11 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 )
             )
 
-        loss_latent = (
-            self.criterion_latent(self.model.posterior, self.model.prior).mean(0).sum()
-        )
+        loss_latent = self.criterion_latent(self.model.posterior, self.model.prior)
+        while loss_latent.ndim > 1:
+            loss_latent = loss_latent.sum(-1)
+        if loss_aggregate:
+            loss_latent = loss_latent.mean(0).sum()
         loss_total = loss_task + self.hparams.criterion_latent_weight * loss_latent
         log["loss_latent"] = loss_latent
         log["loss_total"] = loss_total
@@ -1012,26 +1020,47 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         """
 
-        gt_volume = np.sum(batch["seg"][0, -1] > 0)
-        if gt_volume == 0:
+        # we only look at cases where the ground truth volume is not zero
+        gt_volume = batch["seg"][:, -1] > 0
+        while gt_volume.ndim > 1:
+            gt_volume = gt_volume.sum(-1)
+        keep_indices = np.where(gt_volume > 0)[0]
+        if len(keep_indices) == 0:
             return
 
-        old_reconstruct_context = self.hparams.reconstruct_context
-        self.hparams.reconstruct_context = False
+        # drop unwanted cases
+        for key, val in batch.items():
+            if isinstance(val, np.ndarray):
+                batch[key] = val[keep_indices]
+        batch["batch_size"] = len(keep_indices)
+        gt_volume = gt_volume[keep_indices]
 
-        loss, log, log_tensor = self.step(batch, batch_idx, return_all=True)
+        old_reconstruct_context = self.hparams.reconstruct_context
+        old_reduction_task = self.criterion_task.reduction
+        old_reduction_latent = self.criterion_latent.reduction
+        self.hparams.reconstruct_context = False
+        self.criterion_task.reduction = "none"
+        self.criterion_latent.reduction = "none"
+
+        loss, log, log_tensor = self.step(
+            batch, batch_idx, return_all=True, loss_aggregate=False
+        )
 
         self.hparams.reconstruct_context = old_reconstruct_context
+        self.criterion_task.reduction = old_reduction_task
+        self.criterion_latent.reduction = old_reduction_latent
 
-        gt_segmentation = log_tensor["target_seg"][0, -1]
-        prediction = log_tensor["prediction"][0, -1]
-        prediction = torch.argmax(prediction, 0, keepdim=True)
+        gt_segmentation = log_tensor["target_seg"][:, -1]
+        prediction = log_tensor["prediction"][:, -1]
+        prediction = torch.argmax(prediction, 1, keepdim=True)
         dice_wt = dice(
-            prediction, torch.argmax(gt_segmentation, 0, keepdim=True), batch_axes=0
+            prediction,
+            torch.argmax(gt_segmentation, 1, keepdim=True),
+            batch_axes=(0, 1),
         )
-        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=0)
-        dice_all = dice(prediction, gt_segmentation, batch_axes=0)
-        dice_all = torch.cat((dice_all, dice_wt), 0)
+        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=1)
+        dice_all = dice(prediction, gt_segmentation, batch_axes=(0, 1))
+        dice_all = torch.cat((dice_all, dice_wt), 1)
 
         # make samples
         samples = self.model.sample(
@@ -1041,18 +1070,18 @@ class ContinuousTumorGrowth(pl.LightningModule):
             log_tensor["context_image"],
             log_tensor["context_seg"] if self.hparams.use_context_seg else None,
             None,
-        )[:, 0, -1]
-        samples = torch.argmax(samples, 1, keepdim=True)
+        )[:, :, -1]
+        samples = torch.argmax(samples, 2, keepdim=True)
         dice_wt_samples = dice(
             samples,
-            torch.argmax(gt_segmentation, 0, keepdim=True).expand_as(samples),
-            batch_axes=(0, 1),
+            torch.argmax(gt_segmentation, 1, keepdim=True).expand_as(samples),
+            batch_axes=(0, 1, 2),
         )
-        samples = make_onehot(samples, range(self.hparams.num_classes), axis=1)
+        samples = make_onehot(samples, range(self.hparams.num_classes), axis=2)
         dice_all_samples = dice(
-            samples, gt_segmentation.expand_as(samples), batch_axes=(0, 1)
+            samples, gt_segmentation.expand_as(samples), batch_axes=(0, 1, 2)
         )
-        dice_all_samples = torch.cat((dice_all_samples, dice_wt_samples), 1)
+        dice_all_samples = torch.cat((dice_all_samples, dice_wt_samples), 2)
 
         # PyTorch doesn't have nanmax, apparently
         nan_locations = torch.isnan(dice_all_samples)
@@ -1061,38 +1090,43 @@ class ContinuousTumorGrowth(pl.LightningModule):
         dice_all_samples[nan_locations] = np.nan
 
         # get volumes
-        sum_axes = tuple(range(1, samples.ndim))
-        pred_volumes = torch.sum(torch.argmax(samples, 1, keepdim=True) > 0, sum_axes)
-        best_volume_index = torch.argmin(torch.abs(pred_volumes - gt_volume))
-        best_volume_dice = dice_all_samples[best_volume_index]
-
-        subject_info = [
-            log_tensor["subjects"][0],
-            "c" + ",".join(map(str, log_tensor["context_timesteps"][0, :, 0])),
-            "t" + ",".join(map(str, log_tensor["target_timesteps"][0, :, 0])),
-        ]
-        if "slices" in log_tensor:
-            subject_info.append("slc" + str(log_tensor["slices"][0]))
-        subject_info = "_".join(subject_info)
-
-        result = np.array(
-            [
-                subject_info,
-                gt_volume,
-                log["loss_task"].item(),
-                log["loss_latent"].item(),
-                log["loss_total"].item(),
-            ],
-            dtype=object,
+        sum_axes = tuple(range(2, samples.ndim))
+        pred_volumes = torch.sum(torch.argmax(samples, 2, keepdim=True) > 0, sum_axes)
+        gt_volume = torch.from_numpy(gt_volume).to(
+            dtype=pred_volumes.dtype, device=pred_volumes.device
         )
+        best_volume_index = torch.argmin(
+            torch.abs(pred_volumes - gt_volume[None, :]), 0
+        )
+        best_volume_dice = dice_all_samples[best_volume_index]
+        best_volume_dice = torch.stack(
+            [dice_all_samples[i, b] for b, i in enumerate(best_volume_index)]
+        )
+
+        subject_info = []
+        for b in range(batch["batch_size"]):
+            info_str = [
+                log_tensor["subjects"][b],
+                "c" + ",".join(map(str, log_tensor["context_timesteps"][b, :, 0])),
+                "t" + ",".join(map(str, log_tensor["target_timesteps"][b, :, 0])),
+            ]
+            if "slices" in log_tensor:
+                info_str.append("slc" + str(log_tensor["slices"][b]))
+            subject_info.append("_".join(info_str))
+        subject_info = np.array(subject_info, dtype=object)[:, None]
+
         result = np.concatenate(
             (
-                result,
+                subject_info,
+                gt_volume[:, None].cpu().numpy(),
+                log["loss_task"][:, None].cpu().numpy(),
+                log["loss_latent"][:, None].cpu().numpy(),
+                log["loss_total"][:, None].cpu().numpy(),
                 dice_all.cpu().numpy(),
                 best_volume_dice.cpu().numpy(),
                 best_dice.cpu().numpy(),
             ),
-            0,
+            1,
         )
 
         return result
@@ -1115,7 +1149,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             columns_best_dice.insert(-1, "Best Dice Class " + str(c))
 
         arr = pd.DataFrame(
-            np.stack(outputs),
+            np.concatenate(outputs, 0),
             columns=columns
             + columns_dice
             + columns_best_volume_dice

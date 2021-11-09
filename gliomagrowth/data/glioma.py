@@ -1160,7 +1160,7 @@ class GliomaModule(pl.LightningDataModule):
         test_data = load("r", subjects=self.subjects_test, ddir=self.data_dir)
         test_gen = FutureContextGenerator(
             data=test_data,
-            batch_size=1,
+            batch_size=self.batch_size,
             context_size=self.context_size,
             target_size=(1,),
             dim=self.dim,
