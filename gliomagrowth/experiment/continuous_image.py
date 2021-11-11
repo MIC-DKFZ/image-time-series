@@ -1,13 +1,10 @@
 import argparse
 import os
 import sys
-import json
 import matplotlib
 import numpy as np
 import pandas as pd
 import torch
-from torch._C import device
-from torch.optim import lr_scheduler
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
 import plotly.graph_objs as go
@@ -112,7 +109,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
     def __init__(
         self,
         use_images: bool = True,
-        use_context_seg: bool = True,
+        use_context_seg: bool = False,
         in_channels: int = 4,  # image channels
         num_classes: int = 3,  # incl. background
         dim: int = 2,
@@ -122,7 +119,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         criterion_task_onehot: str = True,
         criterion_latent: str = "kldivergence",
         criterion_latent_reduction: str = "mean",
-        criterion_latent_weight: float = 0.1,
+        criterion_latent_weight: float = 0.01,
         optimizer: str = "adam",
         learning_rate: float = 0.01,
         step_lr: bool = False,
@@ -133,7 +130,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         representation_channels: int = 128,
         model_global_sum: bool = True,
         model_spatial_attention: int = 2,
-        model_temporal_attention: int = 2,
+        model_temporal_attention: int = 0,
         model_att_embed_dim: int = 128,
         model_att_heads: int = 8,
         model_depth: int = 5,

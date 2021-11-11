@@ -235,8 +235,8 @@ class PatientNode(Node):
         ct: Tuple[int, int],
         subject_id: str,
         time_size: int,
-        forward_only: bool = False,
-        next_only: bool = False,
+        forward_only: bool = True,
+        next_only: bool = True,
         axis: Optional[int] = None,
         slc: Optional[Iterable[slice]] = None,
         time_offset: int = 0,
@@ -429,8 +429,8 @@ class FutureContextGenerator(SlimDataLoaderBase):
         context_size: Union[int, Iterable[int]],
         target_size: Union[int, Iterable[int]],
         dim: int = 2,
-        forward_only: bool = False,
-        fixed_forward: bool = False,
+        forward_only: bool = True,
+        fixed_forward: bool = True,
         context_larger_than_target: bool = True,
         axis: Optional[int] = 0,
         patch_size: int = 64,
@@ -978,8 +978,8 @@ class GliomaModule(pl.LightningDataModule):
         context_size: Union[int, Iterable[int]] = (2, 3, 4),
         target_size: Union[int, Iterable[int]] = (1, 2),
         dim: int = 2,
-        forward_only: bool = False,
-        fixed_forward: bool = False,
+        forward_only: bool = True,
+        fixed_forward: bool = True,
         forward_only_test: bool = True,
         fixed_forward_test: bool = True,
         context_larger_than_target: bool = True,
@@ -1192,8 +1192,8 @@ class GliomaModule(pl.LightningDataModule):
         parser.add_argument("--context_size", type=int, nargs="+", default=(2, 3, 4))
         parser.add_argument("--target_size", type=int, nargs="+", default=(1, 2))
         parser.add_argument("--dim", type=int, default=2)
-        parser.add_argument("--forward_only", type=str2bool, default=False)
-        parser.add_argument("--fixed_forward", type=str2bool, default=False)
+        parser.add_argument("--forward_only", type=str2bool, default=True)
+        parser.add_argument("--fixed_forward", type=str2bool, default=True)
         parser.add_argument("--forward_only_test", type=str2bool, default=True)
         parser.add_argument("--fixed_forward_test", type=str2bool, default=True)
         parser.add_argument("--context_larger_than_target", type=str2bool, default=True)
