@@ -1,11 +1,33 @@
 from __future__ import annotations
 
-from multiprocessing import Value
+import inspect
 import numpy as np
 import torch
 from torch import nn
-from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any
+from PIL import Image
+from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any, Callable
 from types import ModuleType
+
+
+def matchcall(callable_: Callable, **kwargs: Any) -> Any:
+    """Call a callable with a number of arguments, but arguments that don't fit the
+    signature are dropped.
+
+    Args:
+        callable_: The callable to be called.
+        kwargs: What the callable should be called with.
+
+    Returns:
+        Result of the call.
+
+    """
+
+    sig = inspect.signature(callable_)
+    if "kwargs" in sig.parameters:
+        return callable_(**kwargs)
+    else:
+        calldict = {key: val for key, val in kwargs.items() if key in sig.parameters}
+        return callable_(**calldict)
 
 
 def nn_module_lookup(
@@ -256,6 +278,7 @@ def ct_to_transformable(
     """
 
     keys = ["data", "seg"] + list(keys)
+    keys = set(keys)
 
     for key in keys:
         if key not in context or key not in target:
@@ -703,3 +726,23 @@ class Node:
             for l, line in enumerate(repr(child).split("\n")):
                 info_str += "\n" + 2 * "-" + line
         return info_str
+
+
+def save_gif(data: Union[np.ndarray, torch.Tensor], path: str, **kwargs: Any):
+    """Save a gif from a tensor.
+
+    Args:
+        data: Tensor of shape (N, H, W).
+        path: Path to save the gif to.
+        kwargs: Will be passed to Image.save.
+
+    """
+
+    if not isinstance(data, np.ndarray):
+        data = data.cpu().numpy()
+    images = []
+    for d in range(data.shape[0]):
+        d = data[d]
+        d = (d - d.min()) / (d.max() - d.min())
+        images.append(Image.fromarray((d * 255).astype(np.uint8)))
+    images[0].save(path, save_all=True, append_images=images[1:], **kwargs)
