@@ -4,6 +4,7 @@ import inspect
 import numpy as np
 import torch
 from torch import nn
+from torchvision.utils import make_grid
 from PIL import Image
 from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any, Callable
 from types import ModuleType
@@ -728,13 +729,19 @@ class Node:
         return info_str
 
 
-def save_gif(data: Union[np.ndarray, torch.Tensor], path: str, **kwargs: Any):
-    """Save a gif from a tensor.
+def save_gif(
+    data: Union[np.ndarray, torch.Tensor],
+    path: str,
+    duration: float = 2.0,
+    loop: int = 0,
+):
+    """Save a GIF from a tensor.
 
     Args:
         data: Tensor of shape (N, H, W).
         path: Path to save the gif to.
-        kwargs: Will be passed to Image.save.
+        duration: GIF duration.
+        loop: Number of loops. 0 means infinite loops.
 
     """
 
@@ -745,4 +752,79 @@ def save_gif(data: Union[np.ndarray, torch.Tensor], path: str, **kwargs: Any):
         d = data[d]
         d = (d - d.min()) / (d.max() - d.min())
         images.append(Image.fromarray((d * 255).astype(np.uint8)))
-    images[0].save(path, save_all=True, append_images=images[1:], **kwargs)
+    images[0].save(
+        path, save_all=True, append_images=images[1:], duration=duration, loop=loop
+    )
+
+
+def save_gif_grid(
+    data: Iterable[Union[np.ndarray, torch.Tensor]],
+    path: str,
+    static_overlay: Optional[Iterable[bool]] = None,
+    duration: float = 2.0,
+    loop: int = 0,
+    **kwargs: Any,
+):
+    """Save a grid of tensors in a gif.
+
+    Args:
+        data: Tensors of shape (N, H, W) or (H, W).
+        path: Path to save the gif to.
+        duration: GIF duration.
+        loop: Number of loops. 0 means infinite loops.
+
+    """
+
+    if static_overlay is None:
+        static_overlay = [False] * len(data)
+
+    data = list(data)
+
+    N, H, W = None, None, None
+    for d, item in enumerate(data):
+        if item.ndim == 3:
+            if d == 0:
+                N, H, W = item.shape
+            elif tuple(item.shape) != (N, H, W):
+                raise ValueError("All 3D tensors must have the same shape!")
+        elif item.ndim == 2:
+            if d == 0:
+                H, W = item.shape
+            elif tuple(item.shape) != (H, W):
+                raise ValueError("All tensors must have the same spatial dimensions!")
+        else:
+            raise ValueError("Only 2D and 3D tensors are supported!")
+    if N is None:
+        N = 1
+
+    for d, item in enumerate(data):
+
+        if not isinstance(item, (np.ndarray, torch.Tensor)):
+            raise TypeError(
+                f"Unknown data type, expected np.ndarray or torch.Tensor, "
+                f"but found {type(item)}."
+            )
+        elif isinstance(item, np.ndarray):
+            item = torch.from_numpy(item)
+        elif isinstance(item, torch.Tensor):
+            item = item.cpu()
+
+        if item.ndim == 3 and static_overlay[d]:
+            item = item.float().mean(0, keepdim=True).expand(N, -1, -1)
+
+        elif item.ndim == 2:
+            item = item.unsqueeze(0).expand(N, -1, -1)
+
+        data[d] = item
+
+    # now each entry in data is a tensor of shape (N, H, W)
+    images = []
+    for n in range(N):
+        image = make_grid([data[i][n : n + 1] for i in range(len(data))], **kwargs)[0]
+        image = image.numpy()
+        image = (image - image.min()) / (image.max() - image.min())
+        images.append(Image.fromarray((image * 255).astype(np.uint8)))
+
+    images[0].save(
+        path, save_all=True, append_images=images[1:], duration=duration, loop=loop
+    )
