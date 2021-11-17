@@ -35,7 +35,7 @@ def polygon(N, coords, closed=True):
 
     intervals = np.linspace(0, sum(element_lengths), N + int(closed))
 
-    result_coords = [coords[0]]
+    result_coords = [tuple(coords[0])]
     for interval in intervals[1:]:
         el = 0
         while interval > element_lengths_cumulative[el]:

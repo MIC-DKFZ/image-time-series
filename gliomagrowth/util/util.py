@@ -763,6 +763,7 @@ def save_gif_grid(
     static_overlay: Optional[Iterable[bool]] = None,
     duration: float = 2.0,
     loop: int = 0,
+    auto_color: bool = True,
     **kwargs: Any,
 ):
     """Save a grid of tensors in a gif.
@@ -772,6 +773,7 @@ def save_gif_grid(
         path: Path to save the gif to.
         duration: GIF duration.
         loop: Number of loops. 0 means infinite loops.
+        auto_color: Automatically make colored GIFs if there is a max of 3 objects.
 
     """
 
@@ -779,23 +781,29 @@ def save_gif_grid(
         static_overlay = [False] * len(data)
 
     data = list(data)
+    num_objects = 0
 
     N, H, W = None, None, None
     for d, item in enumerate(data):
-        if item.ndim == 3:
-            if d == 0:
-                N, H, W = item.shape
-            elif tuple(item.shape) != (N, H, W):
-                raise ValueError("All 3D tensors must have the same shape!")
-        elif item.ndim == 2:
-            if d == 0:
-                H, W = item.shape
-            elif tuple(item.shape) != (H, W):
-                raise ValueError("All tensors must have the same spatial dimensions!")
+        if item.ndim == 3 and not static_overlay[d]:
+            if N is None:
+                N = item.shape[0]
+            elif item.shape[0] != N:
+                raise ValueError(
+                    "All 3D tensors must have the same number of elements!"
+                )
+        elif item.ndim in (2, 3):
+            if H is None and W is None:
+                H, W = item.shape[-2:]
+            elif tuple(item.shape[-2:]) != (H, W):
+                raise ValueError("All tensors must have the same spatial dimensions")
         else:
             raise ValueError("Only 2D and 3D tensors are supported!")
+        num_objects = max(num_objects, len(np.unique(item)) - 1)
     if N is None:
         N = 1
+
+    use_color = num_objects in (2, 3) and auto_color
 
     for d, item in enumerate(data):
 
@@ -809,20 +817,37 @@ def save_gif_grid(
         elif isinstance(item, torch.Tensor):
             item = item.cpu()
 
-        if item.ndim == 3 and static_overlay[d]:
-            item = item.float().mean(0, keepdim=True).expand(N, -1, -1)
+        if use_color:
+            ax = int(item.ndim == 3)
+            item = make_onehot(item, range(1, 1 + num_objects), axis=ax, newaxis=True)
+            while item.shape[ax] < 3:
+                new = torch.zeros_like(item)
+                slc = [slice(None)] * new.ndim
+                slc[ax] = slice(0, 1)
+                item = torch.cat([item, new[tuple(slc)]], dim=ax)
+        else:
+            item = item.unsqueeze(1)
 
-        elif item.ndim == 2:
-            item = item.unsqueeze(0).expand(N, -1, -1)
+        if item.ndim == 4 and static_overlay[d]:
+            item = item.float().mean(0, keepdim=True).expand(N, -1, -1, -1)
+
+        elif item.ndim == 3:
+            item = item.unsqueeze(0).expand(N, -1, -1, -1)
 
         data[d] = item
 
-    # now each entry in data is a tensor of shape (N, H, W)
+    # now each entry in data is a tensor of shape (N, C, H, W)
+    data = torch.stack(data)
+
     images = []
     for n in range(N):
-        image = make_grid([data[i][n : n + 1] for i in range(len(data))], **kwargs)[0]
+        if not use_color:
+            image = make_grid(data[:, n], **kwargs)[0]
+            image = (image - data.min()) / (data.max() - data.min())
+        else:
+            image = make_grid(data[:, n], **kwargs)
+            image = image.permute(1, 2, 0)
         image = image.numpy()
-        image = (image - image.min()) / (image.max() - image.min())
         images.append(Image.fromarray((image * 255).astype(np.uint8)))
 
     images[0].save(
