@@ -7,7 +7,7 @@ def circle(center_x=0.5, center_y=0.5, radius=0.25, image_size=64, **kwargs):
     img = np.zeros((image_size, image_size), dtype=np.uint8)
     center = np.array([center_x, center_y]) * image_size
     radius *= image_size
-    cc, rr = draw.circle(*center, radius, shape=img.shape)
+    cc, rr = draw.disk(center, radius, shape=img.shape)
 
     cc = cc[rr >= 0]
     rr = rr[rr >= 0]
