@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import inspect
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
 from torchvision.utils import make_grid
 from PIL import Image
+import imageio
 from typing import Union, Iterable, Optional, Dict, Tuple, Type, Any, Callable
 from types import ModuleType
 
@@ -761,9 +763,8 @@ def save_gif_grid(
     data: Iterable[Union[np.ndarray, torch.Tensor]],
     path: str,
     static_overlay: Optional[Iterable[bool]] = None,
-    duration: float = 2.0,
-    loop: int = 0,
-    auto_color: bool = True,
+    fps: int = 30,
+    cmap: Optional[str] = None,
     **kwargs: Any,
 ):
     """Save a grid of tensors in a gif.
@@ -771,17 +772,18 @@ def save_gif_grid(
     Args:
         data: Tensors of shape (N, H, W) or (H, W).
         path: Path to save the gif to.
-        duration: GIF duration.
-        loop: Number of loops. 0 means infinite loops.
-        auto_color: Automatically make colored GIFs if there is a max of 3 objects.
+        fps: Frames per second.
+        cmap: This colormap will be applied. None means grayscale.
 
     """
+
+    if cmap:
+        cmap = plt.get_cmap(cmap)
 
     if static_overlay is None:
         static_overlay = [False] * len(data)
 
     data = list(data)
-    num_objects = 0
 
     N, H, W = None, None, None
     for d, item in enumerate(data):
@@ -799,11 +801,8 @@ def save_gif_grid(
                 raise ValueError("All tensors must have the same spatial dimensions")
         else:
             raise ValueError("Only 2D and 3D tensors are supported!")
-        num_objects = max(num_objects, len(np.unique(item)) - 1)
     if N is None:
         N = 1
-
-    use_color = num_objects in (2, 3) and auto_color
 
     for d, item in enumerate(data):
 
@@ -817,39 +816,34 @@ def save_gif_grid(
         elif isinstance(item, torch.Tensor):
             item = item.cpu()
 
-        if use_color:
-            ax = int(item.ndim == 3)
-            item = make_onehot(item, range(1, 1 + num_objects), axis=ax, newaxis=True)
-            while item.shape[ax] < 3:
-                new = torch.zeros_like(item)
-                slc = [slice(None)] * new.ndim
-                slc[ax] = slice(0, 1)
-                item = torch.cat([item, new[tuple(slc)]], dim=ax)
+        item = item.float()
+
+        if cmap:
+            item = (item - item.min()) / (item.max() - item.min())
+            item = torch.from_numpy(cmap(item)[..., :3])
         else:
-            item = item.unsqueeze(1)
+            item = item.unsqueeze(-1)
 
         if item.ndim == 4 and static_overlay[d]:
-            item = item.float().mean(0, keepdim=True).expand(N, -1, -1, -1)
+            item = item.mean(0, keepdim=True).expand(N, -1, -1, -1)
 
         elif item.ndim == 3:
             item = item.unsqueeze(0).expand(N, -1, -1, -1)
 
         data[d] = item
 
-    # now each entry in data is a tensor of shape (N, C, H, W)
-    data = torch.stack(data)
+    # now each entry in data is a tensor of shape (N, H, W, 3/1)
+    data = torch.stack(data).to(torch.float32)
+    data = data.permute(0, 1, 4, 2, 3)
 
     images = []
     for n in range(N):
-        if not use_color:
-            image = make_grid(data[:, n], **kwargs)[0]
-            image = (image - data.min()) / (data.max() - data.min())
+        image = make_grid(data[:, n], **kwargs)
+        if not cmap:
+            image = (image[0] - data.min()) / (data.max() - data.min())
         else:
-            image = make_grid(data[:, n], **kwargs)
             image = image.permute(1, 2, 0)
         image = image.numpy()
         images.append(Image.fromarray((image * 255).astype(np.uint8)))
 
-    images[0].save(
-        path, save_all=True, append_images=images[1:], duration=duration, loop=loop
-    )
+    imageio.mimsave(path, images, fps=fps)

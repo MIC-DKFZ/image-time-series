@@ -393,13 +393,16 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
 # for quick debugging :)
 if __name__ == "__main__":
 
+    img_size = 128
     gen = RandomTrajectoryGenerator(
-        batch_size=8,
+        batch_size=1,
         target_size=100,
         shape_function=(shape.circle, shape.star),
         shape_kwargs=(
-            dict(radius=(0.05, 0.2), image_size=128),
-            dict(size=(0.05, 0.3), t=(0.2, 0.8), rotation=(0.0, 0.5), image_size=128),
+            dict(radius=(0.05, 0.2), image_size=img_size),
+            dict(
+                size=(0.05, 0.3), t=(0.2, 0.8), rotation=(0.0, 0.5), image_size=img_size
+            ),
         ),
         shape_trajectory_identifiers=("center_x", "center_y"),
         trajectory_function=(trajectory.circle_, trajectory.line_),
@@ -415,7 +418,7 @@ if __name__ == "__main__":
         num_objects=2,
         meta_trajectories=True,
         circular_position=(True, False),
-        image_size=128,
+        image_size=img_size,
     )
 
     context, target = next(gen)
@@ -429,6 +432,7 @@ if __name__ == "__main__":
         "/home/jens/Desktop/test.gif",
         pad_value=1,
         nrow=4,
+        scale_each=False,
         static_overlay=static_overlay,
-        auto_color=True,
+        cmap="magma",
     )

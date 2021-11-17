@@ -5,3 +5,5 @@ torchvision
 pytorch_lightning>=1.4.0
 mlflow
 visdom
+PIL
+imageio
