@@ -7,3 +7,4 @@ mlflow
 visdom
 PIL
 imageio
+skimage
