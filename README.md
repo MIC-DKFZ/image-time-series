@@ -1,6 +1,6 @@
-# Deep Glioma Growth
+# Image Time Series
 
-This repository contains the code for our MICCAI 2021 paper called ["Continuous-Time Deep Glioma Growth Models"](https://arxiv.org/abs/2106.12917). We're still actively working on the code and have added a number of options that go beyond what was presented in the paper (e.g. working without context segmentations).
+This repository contains code and experiments for interpolation of image/segmentation time series that are sparse and irregularly sampled (and possibly stochastic). The first publication in this line of work is our MICCAI 2021 paper called ["Continuous-Time Deep Glioma Growth Models"](https://arxiv.org/abs/2106.12917). We're still actively working on the code and have added a number of options that go beyond what was presented in the paper (e.g. working without context segmentations).
 
 ## Installation
 
