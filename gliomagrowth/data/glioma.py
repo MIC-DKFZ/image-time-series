@@ -751,6 +751,7 @@ class RandomFutureContextGenerator(FutureContextGenerator):
         *args,
         random_date_shift: Iterable[float] = (-1.0, 1.0),
         random_rotation: bool = True,
+        seed: int = 1,
         **kwargs,
     ):
 
@@ -758,6 +759,7 @@ class RandomFutureContextGenerator(FutureContextGenerator):
 
         self.random_date_shift = random_date_shift
         self.random_rotation = random_rotation
+        self.seed = seed
         self.num_restarted = 0
 
     def reset(self):
@@ -765,7 +767,8 @@ class RandomFutureContextGenerator(FutureContextGenerator):
 
         super().reset()
         self.rs = np.random.RandomState(
-            self.thread_id
+            self.seed
+            + self.thread_id
             + self.num_restarted * self.number_of_threads_in_multithreaded
         )
         self.num_restarted = self.num_restarted + 1
@@ -1088,6 +1091,7 @@ class GliomaModule(pl.LightningDataModule):
             number_of_threads_in_multithreaded=self.n_processes,
             merge_context_target=True,
             drop_labels=self.drop_labels,
+            seed=self.seed,
         )
 
         transforms = get_train_transforms(
@@ -1148,6 +1152,7 @@ class GliomaModule(pl.LightningDataModule):
             number_of_threads_in_multithreaded=1,
             merge_context_target=True,
             drop_labels=self.drop_labels,
+            seed=self.seed,
         )
 
         return val_gen
