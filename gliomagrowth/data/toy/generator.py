@@ -786,20 +786,41 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
 # for quick debugging :)
 if __name__ == "__main__":
 
-    img_size = 128
-    gen = RandomTrajectoryGenerator(
+    mod = SegmentationTrajectoryModule(
         batch_size=1,
-        target_size=100,
-        shape_function=(shape.circle, shape.star),
+        context_size=5,
+        target_size=50,
+        shape_function=("circle", "star"),
         shape_kwargs=(
-            dict(radius=(0.05, 0.2), image_size=img_size),
-            dict(
-                size=(0.05, 0.3), t=(0.2, 0.8), rotation=(0.0, 0.5), image_size=img_size
-            ),
+            dict(radius=(0.05, 0.2)),
+            dict(size=(0.1, 0.3), t=(0.2, 0.8), rotation=(0.0, 0.5)),
         ),
         shape_trajectory_identifiers=("center_x", "center_y"),
-        trajectory_function=(trajectory.circle_, trajectory.line_),
-        trajectory_kwargs=(
+        trajectory_function="line_",
+        trajectory_kwargs=dict(
+            start_x=(0.0, 1.0),
+            start_y=(0.0, 1.0),
+            end_x=(0.0, 1.0),
+            end_y=(0.0, 1.0),
+        ),
+        num_objects=2,
+        meta_trajectories=True,
+        circular_position=False,
+        image_size=128,
+        shape_function_test=("rectangle", "triangle_square"),
+        shape_kwargs_test=(
+            dict(
+                end_x=(0.0, 1.0),
+                end_y=(0.0, 1.0),
+            ),
+            dict(size=(0.1, 0.3), t=(0.2, 0.8), rotation=(0.0, 0.5)),
+        ),
+        shape_trajectory_identifiers_test=(
+            ("start_x", "start_y"),
+            ("center_x", "center_y"),
+        ),
+        trajectory_function_test=("circle_", "line_"),
+        trajectory_kwargs_test=(
             dict(center_x=(0.0, 1.0), center_y=(0.0, 1.0), radius=(0.1, 0.2)),
             dict(
                 start_x=(0.0, 1.0),
@@ -808,24 +829,26 @@ if __name__ == "__main__":
                 end_y=(0.0, 1.0),
             ),
         ),
-        num_objects=2,
-        meta_trajectories=True,
-        circular_position=(True, False),
-        image_size=img_size,
+        circular_position_test=(True, False),
     )
 
-    context, target = next(gen)
-    data = []
-    static_overlay = []
-    for i in range(context["data"].shape[0]):
-        data.extend([context["data"][i, :, 0], target["data"][i, :, 0]])
-        static_overlay.extend([True, False])
+    context_train, target_train = next(mod.train_dataloader())
+    context_val, target_val = next(mod.val_dataloader())
+    context_test, target_test = next(mod.test_dataloader())
+
     save_gif_grid(
-        data,
-        "/home/jens/Desktop/test.gif",
+        (
+            context_train["data"][0, :, 0],
+            target_train["data"][0, :, 0],
+            context_val["data"][0, :, 0],
+            target_val["data"][0, :, 0],
+            context_test["data"][0, :, 0],
+            target_test["data"][0, :, 0],
+        ),
+        "test.gif",
         pad_value=1,
-        nrow=4,
+        nrow=2,
         scale_each=False,
-        static_overlay=static_overlay,
+        static_overlay=(True, False, True, False, True, False),
         cmap="magma",
     )
