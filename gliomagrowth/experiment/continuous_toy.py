@@ -15,7 +15,6 @@ from gliomagrowth.util.util import (
     nn_module_lookup,
     make_onehot,
     stack_batch,
-    transformable_to_ct,
 )
 from gliomagrowth.util.lightning import (
     VisdomLogger,
@@ -31,23 +30,11 @@ from gliomagrowth.nn.neuralprocess import AttentiveImageProcess
 from gliomagrowth.eval.metrics import dice
 
 
-class ContinuousTumorGrowth(pl.LightningModule):
-    """Experiment for tumor growth on a continuous time axis.
-
-    We're expecting image time series with observations consisting of
-    (image, segmentation, time value). We learn a growth model by predicting future
-    segmentations from a variable number of inputs.
-
-    Many arguments can be supplied as strings, e.g. 'adam', and will automatically be
-    translated to the appropriate PyTorch operators.
+class ContinuousSegmentation(pl.LightningModule):
+    """Toy experiment to test segmentation interpolation.
 
     Args:
-        use_images: Use input images. Otherwise just segmentations and time values
-            are used.
-        in_channels: Image channels.
-        num_classes: Number of classes in background, including background.
-        dim: Either 2 or 3.
-        reconstruct_context: Also reconstruct the context observations. Recommended!
+        num_classes: Number of classes including background.
         criterion_task: Loss for the output predictions.
         criterion_task_reduction: Reduction argument for criterion_task.
         criterion_task_onehot: Activate this if the target segmentation needs to be
@@ -101,19 +88,12 @@ class ContinuousTumorGrowth(pl.LightningModule):
         model_global_pool: Global pooling operator. Applied before last encoder output.
         model_global_pool_kwargs: Initialization arguments for global pooling.
         model_use_coords: Concatenate coordinates at each depth.
-        test_dice_samples: During testing we sample multiple predictions to get the best
-            Dice from the prior. How many samples should we draw?
 
     """
 
     def __init__(
         self,
-        use_images: bool = True,
-        use_context_seg: bool = False,
-        in_channels: int = 4,  # image channels
-        num_classes: int = 3,  # incl. background
-        dim: int = 2,
-        reconstruct_context: bool = True,
+        num_classes: int = 2,  # incl. background
         criterion_task: str = "crossentropydiceloss",
         criterion_task_reduction: str = "mean",
         criterion_task_onehot: str = True,
@@ -158,7 +138,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
         model_global_pool: str = "adaptiveavgpool",
         model_global_pool_kwargs: Optional[dict] = None,
         model_use_coords: bool = True,
-        test_dice_samples: int = 100,
         **kwargs
     ):
 
@@ -166,10 +145,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         self.save_hyperparameters()
         self.model = self.make_model(self.hparams)
-        self.criterion_task = nn_module_lookup(criterion_task, dim, customloss)(
+        self.criterion_task = nn_module_lookup(criterion_task, 2, customloss)(
             reduction=self.hparams.criterion_task_reduction
         )
-        self.criterion_latent = nn_module_lookup(criterion_latent, dim, customloss)()
+        self.criterion_latent = nn_module_lookup(criterion_latent, 2, customloss)()
 
         self.learning_rate = self.hparams.learning_rate
 
@@ -229,25 +208,15 @@ class ContinuousTumorGrowth(pl.LightningModule):
             )
 
         # look up ops from strings
-        activation_op = nn_module_lookup(hparams.model_activation, hparams.dim)
-        output_activation_op = nn_module_lookup(
-            hparams.model_output_activation, hparams.dim
-        )
-        norm_op = nn_module_lookup(hparams.model_norm, hparams.dim)
-        pool_op = nn_module_lookup(hparams.model_pool, hparams.dim)
-        upsample_op = nn_module_lookup(hparams.model_upsample, hparams.dim)
-        initial_upsample_op = nn_module_lookup(
-            hparams.model_initial_upsample, hparams.dim
-        )
-        global_pool_op = nn_module_lookup(hparams.model_global_pool, hparams.dim)
-        dropout_op = (
-            nn_module_lookup("dropout", hparams.dim) if hparams.model_dropout else None
-        )
-        conv_op = nn_module_lookup("conv", hparams.dim)
-
-        # only necessary when target image inputs are available
-        target_encoder_op = None
-        target_encoder_kwargs = None
+        activation_op = nn_module_lookup(hparams.model_activation, 2)
+        output_activation_op = nn_module_lookup(hparams.model_output_activation, 2)
+        norm_op = nn_module_lookup(hparams.model_norm, 2)
+        pool_op = nn_module_lookup(hparams.model_pool, 2)
+        upsample_op = nn_module_lookup(hparams.model_upsample, 2)
+        initial_upsample_op = nn_module_lookup(hparams.model_initial_upsample, 2)
+        global_pool_op = nn_module_lookup(hparams.model_global_pool, 2)
+        dropout_op = nn_module_lookup("dropout", 2) if hparams.model_dropout else None
+        conv_op = nn_module_lookup("conv", 2)
 
         # configure encoder
         context_encoder_op = MultiOutputInjectionConvEncoder
@@ -255,9 +224,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             return_last=1
             + hparams.model_spatial_attention
             + hparams.model_temporal_attention,
-            in_channels=1
-            + int(hparams.use_context_seg) * hparams.num_classes
-            + int(hparams.use_images) * hparams.in_channels,
+            in_channels=1 + hparams.num_classes,
             out_channels=2 * hparams.representation_channels,
             depth=hparams.model_depth,
             block_depth=hparams.model_block_depth,
@@ -277,7 +244,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             global_pool_op=global_pool_op,
             global_pool_kwargs=hparams.model_global_pool_kwargs,
             coords=hparams.model_use_coords,
-            coords_dim=hparams.dim,
+            coords_dim=2,
         )
 
         # configure decoder
@@ -294,9 +261,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             in_channels.append(fmaps)
         in_channels = list(reversed(in_channels))
         if hparams.model_initial_upsample_kwargs is None:
-            initial_upsample_kwargs = dict(
-                size=(2 ** (7 - hparams.model_depth),) * hparams.dim
-            )
+            initial_upsample_kwargs = dict(size=(2 ** (7 - hparams.model_depth),) * 2)
         else:
             initial_upsample_kwargs = hparams.model_initial_upsample_kwargs
         decoder_op = MultiInputConvDecoder
@@ -324,41 +289,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
             output_activation_op=output_activation_op,
             output_activation_kwargs=hparams.model_output_activation_kwargs,
             coords=hparams.model_use_coords,
-            coords_dim=hparams.dim,
+            coords_dim=2,
         )
-
-        # configure posterior encoder if necessary
-        if not hparams.use_context_seg:
-            posterior_encoder_op = MultiOutputInjectionConvEncoder
-            posterior_encoder_kwargs = dict(
-                return_last=1
-                + hparams.model_spatial_attention
-                + hparams.model_temporal_attention,
-                in_channels=1 + hparams.num_classes + hparams.in_channels,
-                out_channels=2 * hparams.representation_channels,
-                depth=hparams.model_depth,
-                block_depth=hparams.model_block_depth,
-                num_feature_maps=hparams.model_feature_maps,
-                feature_map_multiplier=hparams.model_feature_map_multiplier,
-                activation_op=activation_op,
-                activation_kwargs=hparams.model_activation_kwargs,
-                norm_op=norm_op,
-                norm_kwargs=hparams.model_norm_kwargs,
-                norm_depth=hparams.model_norm_depth,
-                conv_op=conv_op,
-                conv_kwargs=None,
-                pool_op=pool_op,
-                pool_kwargs=hparams.model_pool_kwargs,
-                dropout_op=dropout_op,
-                dropout_kwargs=hparams.model_dropout_kwargs,
-                global_pool_op=global_pool_op,
-                global_pool_kwargs=hparams.model_global_pool_kwargs,
-                coords=hparams.model_use_coords,
-                coords_dim=hparams.dim,
-            )
-        else:
-            posterior_encoder_op = None
-            posterior_encoder_kwargs = None
 
         # configure attention
         kdim = [hparams.representation_channels + 1]
@@ -378,7 +310,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
             embed_dim=hparams.model_att_embed_dim,
             num_heads=hparams.model_att_heads,
             spatial_attention=True,
-            concat_coords=hparams.dim,
+            concat_coords=2,
             bias=True,
             batch_first=True,
             embed_v=True,
@@ -412,16 +344,16 @@ class ContinuousTumorGrowth(pl.LightningModule):
             if hparams.model_temporal_attention > 0
             else None,
             higher_level_attention_kwargs=temporal_attention_kwargs,
-            target_encoder_op=target_encoder_op,
-            target_encoder_kwargs=target_encoder_kwargs,
+            target_encoder_op=None,
+            target_encoder_kwargs=None,
             context_encoder_op=context_encoder_op,
             context_encoder_kwargs=context_encoder_kwargs,
             decoder_op=decoder_op,
             decoder_kwargs=decoder_kwargs,
             attention_op=attention_op,
             attention_kwargs=attention_kwargs,
-            posterior_encoder_op=posterior_encoder_op,
-            posterior_encoder_kwargs=posterior_encoder_kwargs,
+            posterior_encoder_op=None,
+            posterior_encoder_kwargs=None,
         )
 
         return model_op(**model_kwargs)
@@ -433,7 +365,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
     def step(
         self,
-        batch: Dict[str, np.ndarray],
+        batch: Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]],
         batch_idx: int,
         return_all: bool = False,
         loss_aggregate: bool = True,
@@ -441,7 +373,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         """Base step that is used by train, val and test.
 
         Args:
-            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch: A dictionary that should at least have "position", "data".
             batch_idx: Not used.
             return_all: Also return a dict with input and output tensors. Use this to
                 get the data for visualization and similar.
@@ -457,41 +389,26 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         """
 
-        context, target = transformable_to_ct(batch)
+        context, target = batch
 
-        context_query = context["scan_days"]  # (B, N, 1)
-        context_seg = context["seg"]  # (B, N, 1, SPACE)
-        target_query = target["scan_days"]  # (B, M, 1)
-        target_seg = target["seg"]  # (B, M, 1, SPACE)
+        context_query = context["position"]  # (B, N, P)
+        context_seg = context["data"]  # (B, N, 1, SPACE)
+        target_query = target["position"]  # (B, M, P)
+        target_seg = target["data"]  # (B, M, 1, SPACE)
         context_query = torch.from_numpy(context_query).to(self.device, torch.float)
         context_seg = torch.from_numpy(context_seg).to(self.device, torch.float)
         target_query = torch.from_numpy(target_query).to(self.device, torch.float)
         target_seg = torch.from_numpy(target_seg).to(self.device, torch.float)
-        if self.hparams.use_images:
-            context_image = context["data"]  # (B, N, C, SPACE)
-            context_image = torch.from_numpy(context_image).to(self.device, torch.float)
-            # target images only for posterior
-            target_image = target["data"]  # (B, M, C, SPACE)
-            target_image = torch.from_numpy(target_image).to(self.device, torch.float)
-        else:
-            context_image = None
-            target_image = None
 
         context_seg = make_onehot(context_seg, range(self.hparams.num_classes), axis=2)
         target_seg = make_onehot(target_seg, range(self.hparams.num_classes), axis=2)
 
-        if self.hparams.reconstruct_context:
-            target_query = torch.cat((context_query, target_query), 1)
-            target_seg = torch.cat((context_seg, target_seg), 1)
-            if target_image is not None:
-                target_image = torch.cat((context_image, target_image), 1)
-
         prediction = self.model(
             context_query=context_query,
             target_query=target_query,
-            context_image=context_image,
-            context_seg=context_seg if self.hparams.use_context_seg else None,
-            target_image=target_image,
+            context_image=None,
+            context_seg=context_seg,
+            target_image=None,
             target_seg=target_seg,
         )
 
@@ -517,9 +434,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
             _ = self.model.encode_posterior(
                 self.model.encode_context(
                     target_query,
-                    target_image,
+                    None,
                     target_seg,
-                    encoder=getattr(self.model, "posterior_encoder", None),
                 )
             )
 
@@ -537,211 +453,15 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         log_tensor = {}
         if return_all:
-            log_tensor["subjects"] = context["subjects"]
-            log_tensor["context_timesteps"] = context["timesteps"]
-            log_tensor["target_timesteps"] = target["timesteps"]
-            log_tensor["context_scan_days"] = context["scan_days"]
-            log_tensor["target_scan_days"] = target["scan_days"]
+            log_tensor["context_positions"] = context["position"]
+            log_tensor["target_positions"] = target["position"]
             log_tensor["context_query"] = context_query
             log_tensor["target_query"] = target_query
-            log_tensor["context_image"] = context_image
             log_tensor["context_seg"] = context_seg
             log_tensor["target_seg"] = target_seg
             log_tensor["prediction"] = prediction
-            if "slices" in context:
-                log_tensor["slices"] = context["slices"]
 
         return loss_total, log, log_tensor
-
-    def make_volumes_plot(
-        self,
-        context_query: torch.Tensor,
-        context_seg: torch.Tensor,
-        target_query: torch.Tensor,
-        context_image: torch.Tensor,
-        target_seg: torch.Tensor,
-        n_predictions: int = 50,
-        range_extend_factor: float = 0.1,
-        epoch: Optional[int] = None,
-        batch_idx: Optional[int] = None,
-        to_disk: bool = False,
-        subdir: Optional[str] = None,
-    ):
-        """Create a continuous volume plot.
-
-        We automatically select the first example from the batch
-
-        Args:
-            context_query: Context time values, (B, N, 1)
-            context_seg: Context segmentations, (B, N, Cs, ...)
-            target_query: Target time values, (B, M, 1)
-            context_image: Context inputs, (B, N, Ci, ...)
-            target_seg: Target segmentations, (B, M, Cs, ...)
-            n_predictions: Take this many points along the time axis.
-            range_extend_factor: We use the range of available queries to make
-                predictions. The range will be padded by this factor.
-            epoch: Prepends "epoch{epoch}_" to the name.
-            batch_idx: Prepends "step{batch_idx}_" to the name.
-            to_disk: Save to disk.
-            subdir: Optional subdirectory in logging folder.
-
-        """
-
-        spatial_axes = list(range(3, context_seg.ndim))
-
-        context_query = context_query[:1]
-        context_seg = context_seg[:1]
-        target_query = target_query[:1]
-        context_image = context_image[:1]
-        target_seg = target_seg[:1]
-        context_volumes = context_seg[:1, :, 1:].sum(spatial_axes)
-        target_volumes = target_seg[:1, :, 1:].sum(spatial_axes)
-        if self.hparams.reconstruct_context:
-            target_volumes = target_volumes[:, context_volumes.shape[1] :]
-            target_query = target_query[:, context_volumes.shape[1] :]
-
-        # make new input range
-        min_ = min(context_query.min().item(), target_query.min().item())
-        max_ = max(target_query.max().item(), target_query.max().item())
-        range_ = max_ - min_
-        queries = torch.linspace(
-            min_ - range_extend_factor * range_,
-            max_ + range_extend_factor * range_,
-            n_predictions,
-            dtype=target_query.dtype,
-            device=target_query.device,
-        )[None, :, None]
-
-        # make predictions, expect shape (1, n_predictions, Cs, ...)
-        prediction = self.model(
-            context_query=context_query,
-            target_query=queries,
-            context_image=context_image,
-            context_seg=context_seg if self.hparams.use_context_seg else None,
-            target_image=None,
-            target_seg=None,
-        )
-        prediction = torch.argmax(prediction, 2, keepdim=True)
-        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=2)
-        predicted_volumes = prediction[:, :, 1:].sum(spatial_axes)
-
-        queries = queries.detach().cpu().numpy()
-        predicted_volumes = predicted_volumes.detach().cpu().numpy()
-        context_query = context_query.detach().cpu().numpy()
-        context_volumes = context_volumes.detach().cpu().numpy()
-        target_query = target_query.detach().cpu().numpy()
-        target_volumes = target_volumes.detach().cpu().numpy()
-
-        for logger in self.logger:
-            if isinstance(logger, VisdomLogger):
-
-                fig = go.Figure()
-
-                for c in range(predicted_volumes.shape[-1]):
-
-                    fig.add_trace(
-                        go.Scatter(
-                            x=queries[0, :, 0],
-                            y=predicted_volumes[0, :, c],
-                            mode="lines",
-                            name="prediction_c" + str(c + 1),
-                            line=dict(color="black", width=1),
-                        )
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=context_query[0, :, 0],
-                            y=context_volumes[0, :, c],
-                            mode="markers",
-                            marker=dict(color="black", size=6),
-                            name="context_c" + str(c + 1),
-                        )
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=target_query[0, :, 0],
-                            y=target_volumes[0, :, c],
-                            mode="markers",
-                            marker=dict(color="black", size=6),
-                            marker_symbol="circle-open",
-                            name="target_c" + str(c + 1),
-                        )
-                    )
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=queries[0, :, 0],
-                        y=predicted_volumes[0].sum(-1),
-                        mode="lines",
-                        name="prediction_all",
-                        line=dict(color="blue", width=1),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=context_query[0, :, 0],
-                        y=context_volumes[0].sum(-1),
-                        mode="markers",
-                        marker=dict(color="blue", size=6),
-                        name="context_all",
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=target_query[0, :, 0],
-                        y=target_volumes[0].sum(-1),
-                        mode="markers",
-                        marker=dict(color="blue", size=6),
-                        marker_symbol="circle-open",
-                        name="target_all",
-                    )
-                )
-
-                logger.experiment.plotlyplot(fig, "val_volumes")
-
-                del fig
-
-        if to_disk:
-
-            prefix = ""
-            if epoch is not None:
-                format_ = "epoch{:0" + str(len(str(self.trainer.max_epochs))) + "d}_"
-                prefix += format_.format(epoch)
-            if batch_idx is not None:
-                format_ = "step{}_"
-                prefix += format_.format(batch_idx)
-            full_name = prefix + "val_volumes"
-            if subdir is not None:
-                full_name = os.path.join(subdir, full_name)
-
-            fig, ax = matplotlib.pyplot.subplots(1, 1)
-
-            for c in range(predicted_volumes.shape[-1]):
-
-                ax.plot(queries[0, :, 0], predicted_volumes[0, :, c], "k-")
-                ax.plot(context_query[0, :, 0], context_volumes[0, :, c], "ko", ms=6)
-                ax.plot(
-                    target_query[0, :, 0],
-                    target_volumes[0, :, c],
-                    "ko",
-                    ms=6,
-                    markerfacecolor="none",
-                )
-
-            ax.plot(queries[0, :, 0], predicted_volumes[0].sum(-1), "b-")
-            ax.plot(context_query[0, :, 0], context_volumes[0].sum(-1), "bo", ms=6)
-            ax.plot(
-                target_query[0, :, 0],
-                target_volumes[0].sum(-1),
-                "bo",
-                ms=6,
-                markerfacecolor="none",
-            )
-
-            fp = os.path.join(self.trainer._default_root_dir, full_name + ".png")
-            os.makedirs(os.path.dirname(fp), exist_ok=True)
-            matplotlib.pyplot.savefig(fp)
-            matplotlib.pyplot.close(fig)
 
     def log_tensor(
         self,
@@ -785,8 +505,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         # Assume (B, N, C, H, W) shape. In 3D we just take the center along the first
         # axis. Shouldn't matter, because we usually work with random rotations anyway.
-        if self.hparams.dim == 3:
-            tensor = tensor[:, :, :, tensor.shape[3] // 2]
         image_grid = make_grid(
             tensor=tensor[:ntotal, -1].float(),
             nrow=nrow,
@@ -837,12 +555,12 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 save_image(image_grid, fp)
 
     def training_step(
-        self, batch: Dict[str, np.ndarray], batch_idx: int
+        self, batch: Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]], batch_idx: int
     ) -> torch.Tensor:
         """Training step.
 
         Args:
-            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch: A dictionary that should at least have "position", "data".
             batch_idx: The batch index.
 
         Returns:
@@ -860,43 +578,26 @@ class ContinuousTumorGrowth(pl.LightningModule):
         )
 
         if return_all:
-            for key in ("context_image", "context_seg", "target_seg", "prediction"):
+            for key in ("context_seg", "target_seg", "prediction"):
                 if key not in log_tensor:
                     continue
                 val = log_tensor[key]
                 if val is not None:
-                    if "image" in key:
-                        self.log_tensor(
-                            tensor=val,
-                            name="train_" + key,
-                            epoch=self.current_epoch,
-                            batch_idx=batch_idx,
-                            to_disk=False,
-                            subdir="train",
-                            nrow=8,
-                            padding=2,
-                            normalize=True,
-                            range_=None,
-                            scale_each=True,
-                            pad_value=1,
-                            split_channels=True,
-                        )
-                    else:
-                        self.log_tensor(
-                            tensor=torch.argmax(val, 2, keepdim=True),
-                            name="train_" + key,
-                            epoch=self.current_epoch,
-                            batch_idx=batch_idx,
-                            to_disk=False,
-                            subdir="train",
-                            nrow=8,
-                            padding=2,
-                            normalize=True,
-                            range_=(0, self.hparams.num_classes - 1),
-                            scale_each=True,
-                            pad_value=1,
-                            split_channels=False,
-                        )
+                    self.log_tensor(
+                        tensor=torch.argmax(val, 2, keepdim=True),
+                        name="train_" + key,
+                        epoch=self.current_epoch,
+                        batch_idx=batch_idx,
+                        to_disk=False,
+                        subdir="train",
+                        nrow=8,
+                        padding=2,
+                        normalize=True,
+                        range_=(0, self.hparams.num_classes - 1),
+                        scale_each=True,
+                        pad_value=1,
+                        split_channels=False,
+                    )
 
         return loss
 
@@ -906,7 +607,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         """Validation step.
 
         Args:
-            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch: A dictionary that should at least have "position", "data".
             batch_idx: The batch index.
 
         Returns:
@@ -922,51 +623,34 @@ class ContinuousTumorGrowth(pl.LightningModule):
         if return_all:
 
             # regular images
-            for key in ("context_image", "context_seg", "target_seg", "prediction"):
+            for key in ("context_seg", "target_seg", "prediction"):
                 if key not in log_tensor:
                     continue
                 val = log_tensor[key]
                 if val is not None:
-                    if "image" in key:
-                        self.log_tensor(
-                            tensor=val,
-                            name="val_" + key,
-                            epoch=self.current_epoch,
-                            batch_idx=batch_idx,
-                            to_disk=True,
-                            subdir="val",
-                            nrow=8,
-                            padding=2,
-                            normalize=True,
-                            range_=None,
-                            scale_each=True,
-                            pad_value=1,
-                            split_channels=True,
-                        )
-                    else:
-                        self.log_tensor(
-                            tensor=torch.argmax(val, 2, keepdim=True),
-                            name="val_" + key,
-                            epoch=self.current_epoch,
-                            batch_idx=batch_idx,
-                            to_disk=True,
-                            subdir="val",
-                            nrow=8,
-                            padding=2,
-                            normalize=True,
-                            range_=(0, self.hparams.num_classes - 1),
-                            scale_each=True,
-                            pad_value=1,
-                            split_channels=False,
-                        )
+                    self.log_tensor(
+                        tensor=torch.argmax(val, 2, keepdim=True),
+                        name="val_" + key,
+                        epoch=self.current_epoch,
+                        batch_idx=batch_idx,
+                        to_disk=True,
+                        subdir="val",
+                        nrow=8,
+                        padding=2,
+                        normalize=True,
+                        range_=(0, self.hparams.num_classes - 1),
+                        scale_each=True,
+                        pad_value=1,
+                        split_channels=False,
+                    )
 
             # samples
             samples = self.model.sample(
                 8,
                 log_tensor["context_query"][:8],
                 log_tensor["target_query"][:8, -1:],  # want just 1 target point
-                log_tensor["context_image"][:8],
-                log_tensor["context_seg"][:8] if self.hparams.use_context_seg else None,
+                None,
+                log_tensor["context_seg"][:8],
                 None,
             )
             samples = torch.argmax(samples, 3, keepdim=True)
@@ -987,29 +671,16 @@ class ContinuousTumorGrowth(pl.LightningModule):
                 split_channels=False,
             )
 
-            # volumes
-            self.make_volumes_plot(
-                log_tensor["context_query"],
-                log_tensor["context_seg"],
-                log_tensor["target_query"],
-                log_tensor["context_image"],
-                log_tensor["target_seg"],
-                epoch=self.current_epoch,
-                batch_idx=batch_idx,
-                to_disk=True,
-                subdir="val",
-            )
-
         return loss
 
     def test_step(
-        self, batch: Dict[str, np.ndarray], batch_idx: int
+        self, batch: Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]], batch_idx: int
     ) -> Tuple[str, float, float, float, float, float, float, float]:
-        """Test step. Note that this assumes that there is only one target point.
-        The data module should be configured accordingly.
+        """Test step. Note that this assumes that there is only one target point and
+        that the test batch size is 1. The data module should be configured accordingly.
 
         Args:
-            batch: A dictionary that should at least have "scan_days", "data", "seg".
+            batch: A dictionary that should at least have "position", "data".
             batch_idx: The batch index.
 
         Returns:
@@ -1017,25 +688,8 @@ class ContinuousTumorGrowth(pl.LightningModule):
 
         """
 
-        # we only look at cases where the ground truth volume is not zero
-        gt_volume = batch["seg"][:, -1] > 0
-        while gt_volume.ndim > 1:
-            gt_volume = gt_volume.sum(-1)
-        keep_indices = np.where(gt_volume > 0)[0]
-        if len(keep_indices) == 0:
-            return
-
-        # drop unwanted cases
-        for key, val in batch.items():
-            if isinstance(val, np.ndarray):
-                batch[key] = val[keep_indices]
-        batch["batch_size"] = len(keep_indices)
-        gt_volume = gt_volume[keep_indices]
-
-        old_reconstruct_context = self.hparams.reconstruct_context
         old_reduction_task = self.criterion_task.reduction
         old_reduction_latent = self.criterion_latent.reduction
-        self.hparams.reconstruct_context = False
         self.criterion_task.reduction = "none"
         self.criterion_latent.reduction = "none"
 
@@ -1043,7 +697,10 @@ class ContinuousTumorGrowth(pl.LightningModule):
             batch, batch_idx, return_all=True, loss_aggregate=False
         )
 
-        self.hparams.reconstruct_context = old_reconstruct_context
+        import IPython
+
+        IPython.embed()
+
         self.criterion_task.reduction = old_reduction_task
         self.criterion_latent.reduction = old_reduction_latent
 
@@ -1165,10 +822,6 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser = argparse.ArgumentParser(
             parents=[parent_parser], add_help=False, conflict_handler="resolve"
         )
-
-        parser.add_argument("--use_images", type=str2bool, default=True)
-        parser.add_argument("--use_context_seg", type=str2bool, default=True)
-        parser.add_argument("--reconstruct_context", type=str2bool, default=True)
         parser.add_argument(
             "--criterion_task", type=str, default="crossentropydiceloss"
         )
@@ -1183,9 +836,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument("--reduce_lr_on_plateau", type=str2bool, default=False)
         parser.add_argument("--reduce_lr_factor", type=float, default=0.1)
         parser.add_argument("--reduce_lr_patience", type=int, default=10)
-        parser.add_argument("--in_channels", type=int, default=4)
-        parser.add_argument("--num_classes", type=int, default=3)
-        parser.add_argument("--dim", type=int, default=2)
+        parser.add_argument("--num_classes", type=int, default=2)
         parser.add_argument("--criterion_latent_weight", type=float, default=0.1)
         parser.add_argument("--representation_channels", type=int, default=128)
         parser.add_argument("--model_spatial_attention", type=int, default=2)
@@ -1233,14 +884,13 @@ class ContinuousTumorGrowth(pl.LightningModule):
         parser.add_argument(
             "--model_dropout_kwargs", action=DictArgument, nargs="+", default=None
         )
-        parser.add_argument("--test_dice_samples", type=int, default=100)
 
         return parser
 
 
 if __name__ == "__main__":
 
-    ExperimentModule = ContinuousTumorGrowth
+    ExperimentModule = ContinuousSegmentation
 
     parser = make_default_parser()
     parser.add_argument(
@@ -1249,7 +899,7 @@ if __name__ == "__main__":
     parser = pl.Trainer.add_argparse_args(parser)
 
     # select function type
-    parser.add_argument("--data", type=str, default="glioma")
+    parser.add_argument("--data", type=str, default="toy")
     temp_args, _ = parser.parse_known_args()
 
     # try to find a module in gg.data.lightning that matches the name
@@ -1266,15 +916,8 @@ if __name__ == "__main__":
     # manual changes
     if args.mlflow is None:
         args.mlflow = "file://" + os.path.join(args.base_dir, "mlruns")
-    if args.whole_tumor:
-        args.num_classes = 2
     if "--max_epochs" not in sys.argv:
         args.max_epochs = 300
-    if not args.use_images:
-        args.model_norm_depth = 0
-        args.transform_gamma = False
-        args.transform_blur = False
-        args.transform_brightness = False
 
     experiment_name = "{}_{}".format(
         os.path.basename(__file__).split(".")[0], temp_args.data

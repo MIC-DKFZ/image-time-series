@@ -395,7 +395,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             return batch_params_context, batch_params_target
 
 
-class SegmentationTrajectoryModule(pl.LightningDataModule):
+class ToyModule(pl.LightningDataModule):
     """LightningDataModule that wraps data generator. For each argument there is also
     argument_test, which can optionally be used to change the test data.
 
@@ -487,6 +487,8 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
         image_size_test: Optional[int] = None,
         **kwargs,
     ):
+
+        super().__init__()
 
         self.batch_size = batch_size
         self.context_size = context_size
@@ -731,7 +733,7 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
         parser.add_argument("--target_size", type=int, nargs=2, default=(10, 50))
         parser.add_argument("--target_includes_context", type=str2bool, default=False)
         parser.add_argument("--merge_context_target", type=str2bool, default=False)
-        parser.add_argument("--shape_function")
+        parser.add_argument("--shape_function", type=str, default="circle")
         parser.add_argument(
             "--shape_kwargs",
             action=DictArgument,
@@ -744,7 +746,7 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
             nargs="+",
             default=("center_x", "center_y"),
         )
-        parser.add_argument("--trajectory_function")
+        parser.add_argument("--trajectory_function", type=str, default="line_")
         parser.add_argument(
             "--trajectory_kwargs",
             action=DictArgument,
@@ -764,11 +766,43 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
         parser.add_argument("--image_size", type=int, default=64)
 
         parser.add_argument("--batch_size_test", type=int, default=None)
+        parser.add_argument("--context_size_test", type=int, nargs=2, default=None)
+        parser.add_argument("--target_size_test", type=int, nargs=2, default=None)
+        parser.add_argument(
+            "--target_includes_context_test", type=str2bool, default=None
+        )
+        parser.add_argument("--merge_context_target_test", type=str2bool, default=None)
+        parser.add_argument("--shape_function_test", type=str, default=None)
+        parser.add_argument(
+            "--shape_kwargs_test",
+            action=DictArgument,
+            nargs="+",
+            default=None,
+        )
+        parser.add_argument(
+            "--shape_trajectory_identifiers_test",
+            type=str,
+            nargs="+",
+            default=None,
+        )
+        parser.add_argument("--trajectory_function_test", type=str, default=None)
+        parser.add_argument(
+            "--trajectory_kwargs_test",
+            action=DictArgument,
+            nargs="+",
+            default=None,
+        )
+        parser.add_argument("--num_objects_test", type=int, default=None)
+        parser.add_argument("--min_length_test", type=float, default=None)
+        parser.add_argument("--meta_trajectories_test", type=str2bool, default=None)
+        parser.add_argument("--circular_position_test", type=str2bool, default=None)
+        parser.add_argument("--num_max_test", type=int, default=None)
+        parser.add_argument("--image_size_test", type=int, default=None)
+
+        return parser
 
     @classmethod
-    def load_from_checkpoint(
-        cls: type, checkpoint_path: str, **kwargs
-    ) -> SegmentationTrajectoryModule:
+    def load_from_checkpoint(cls: type, checkpoint_path: str, **kwargs) -> ToyModule:
         """Load module from checkpoint.
 
         Args:
@@ -786,7 +820,7 @@ class SegmentationTrajectoryModule(pl.LightningDataModule):
 # for quick debugging :)
 if __name__ == "__main__":
 
-    mod = SegmentationTrajectoryModule(
+    mod = ToyModule(
         batch_size=1,
         context_size=5,
         target_size=50,
