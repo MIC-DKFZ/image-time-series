@@ -119,9 +119,9 @@ class ContinuousTumorGrowth(pl.LightningModule):
         criterion_task_onehot: str = True,
         criterion_latent: str = "kldivergence",
         criterion_latent_reduction: str = "mean",
-        criterion_latent_weight: float = 0.01,
+        criterion_latent_weight: float = 0.1,
         optimizer: str = "adam",
-        learning_rate: float = 0.01,
+        learning_rate: float = 0.0001,
         step_lr: bool = False,
         step_lr_gamma: float = 0.99,  # every epoch
         reduce_lr_on_plateau: bool = False,

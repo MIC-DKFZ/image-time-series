@@ -1,13 +1,11 @@
 import argparse
 import os
 import sys
-import matplotlib
 import numpy as np
 import pandas as pd
 import torch
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
-import plotly.graph_objs as go
 from typing import Optional, Any, Tuple, Dict, Union, List, Iterable
 
 import gliomagrowth as gg
@@ -102,7 +100,7 @@ class ContinuousSegmentation(pl.LightningModule):
         criterion_latent_reduction: str = "mean",
         criterion_latent_weight: float = 0.01,
         optimizer: str = "adam",
-        learning_rate: float = 0.01,
+        learning_rate: float = 0.001,
         step_lr: bool = False,
         step_lr_gamma: float = 0.99,  # every epoch
         reduce_lr_on_plateau: bool = False,
@@ -112,11 +110,11 @@ class ContinuousSegmentation(pl.LightningModule):
         model_global_sum: bool = True,
         model_spatial_attention: int = 2,
         model_temporal_attention: int = 0,
-        model_att_embed_dim: int = 128,
-        model_att_heads: int = 8,
+        model_att_embed_dim: int = 64,
+        model_att_heads: int = 4,
         model_depth: int = 5,
-        model_block_depth: int = 2,
-        model_feature_maps: int = 24,
+        model_block_depth: int = 1,
+        model_feature_maps: int = 12,
         model_feature_map_multiplier: int = 2,
         model_activation: str = "leakyrelu",
         model_activation_kwargs: Optional[dict] = None,
@@ -681,8 +679,7 @@ class ContinuousSegmentation(pl.LightningModule):
     def test_step(
         self, batch: Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]], batch_idx: int
     ) -> Tuple[str, float, float, float, float, float, float, float]:
-        """Test step. Note that this assumes that there is only one target point and
-        that the test batch size is 1. The data module should be configured accordingly.
+        """Test step.
 
         Args:
             batch: A dictionary that should at least have "position", "data".
@@ -705,11 +702,20 @@ class ContinuousSegmentation(pl.LightningModule):
         self.criterion_task.reduction = old_reduction_task
         self.criterion_latent.reduction = old_reduction_latent
 
+        prediction = log_tensor["prediction"]
+        prediction = torch.argmax(prediction, 2, keepdim=True)
+        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=2)
+        prediction = prediction[:, :, 1:]  # remove background
+        target_seg = log_tensor["target_seg"][:, :, 1:]
+        scores = dice(prediction, target_seg, batch_axes=(0, 1, 2))
+        scores = scores.mean(1)  # average along trajectory
+
         result = np.concatenate(
             (
                 log["loss_task"][:, None].cpu().numpy(),
                 log["loss_latent"][:, None].cpu().numpy(),
                 log["loss_total"][:, None].cpu().numpy(),
+                scores.cpu().numpy(),
             ),
             1,
         )
@@ -723,9 +729,10 @@ class ContinuousSegmentation(pl.LightningModule):
             "Loss Latent",
             "Loss",
         ]
+        for c in range(1, self.hparams.num_classes):
+            columns.append("Dice Class " + str(c))
 
         arr = pd.DataFrame(np.concatenate(outputs, 0), columns=columns)
-        # arr = arr.set_index("Info")
         arr.to_csv(os.path.join(self.trainer._default_root_dir, "test.csv"))
 
         arr = arr.mean().to_dict()
@@ -745,22 +752,23 @@ class ContinuousSegmentation(pl.LightningModule):
         parser.add_argument("--criterion_task_onehot", type=str2bool, default=True)
         parser.add_argument("--criterion_latent", type=str, default="kldivergence")
         parser.add_argument("--criterion_latent_reduction", type=str, default="mean")
+        parser.add_argument("--criterion_latent_weight", type=float, default=0.01)
         parser.add_argument("--optimizer", type=str, default="adam")
-        parser.add_argument("--learning_rate", type=float, default=0.0001)
-        parser.add_argument("--step_lr", type=str2bool, default=False)
+        parser.add_argument("--learning_rate", type=float, default=0.001)
+        parser.add_argument("--step_lr", type=str2bool, default=True)
         parser.add_argument("--step_lr_gamma", type=float, default=0.99)
         parser.add_argument("--reduce_lr_on_plateau", type=str2bool, default=False)
         parser.add_argument("--reduce_lr_factor", type=float, default=0.1)
         parser.add_argument("--reduce_lr_patience", type=int, default=10)
         parser.add_argument("--num_classes", type=int, default=2)
-        parser.add_argument("--criterion_latent_weight", type=float, default=0.1)
         parser.add_argument("--representation_channels", type=int, default=128)
         parser.add_argument("--model_spatial_attention", type=int, default=2)
         parser.add_argument("--model_temporal_attention", type=int, default=0)
         parser.add_argument("--model_att_embed_dim", type=int, default=128)
         parser.add_argument("--model_att_heads", type=int, default=8)
         parser.add_argument("--model_depth", type=int, default=5)
-        parser.add_argument("--model_feature_maps", type=int, default=24)
+        parser.add_argument("--model_block_depth", type=int, default=1)
+        parser.add_argument("--model_feature_maps", type=int, default=12)
         parser.add_argument("--model_activation", type=str, default="leakyrelu")
         parser.add_argument(
             "--model_activation_kwargs", action=DictArgument, nargs="+", default=None
@@ -833,12 +841,10 @@ if __name__ == "__main__":
     if args.mlflow is None:
         args.mlflow = "file://" + os.path.join(args.base_dir, "mlruns")
     if "--max_epochs" not in sys.argv:
-        args.max_epochs = 300
+        args.max_epochs = 200
     args.num_classes = args.num_objects + 1
 
-    experiment_name = "{}_{}".format(
-        os.path.basename(__file__).split(".")[0], temp_args.data
-    )
+    experiment_name = "{}".format(os.path.basename(__file__).split(".")[0])
     if hasattr(args, "dim") and args.dim != 2:
         experiment_name += "_{}d".format(args.dim)
     run_experiment(

@@ -18,6 +18,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
 
     Args:
         batch_size: Number of independent examples.
+        batches_per_epoch: Number of batches per epoch.
         context_size: Size of context set.
         target_size: Size of target set.
         target_includes_context: If True, the context is added to the target set.
@@ -49,8 +50,9 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
     def __init__(
         self,
         batch_size: int,
+        batches_per_epoch: int = 1000,
         context_size: Union[int, Iterable[int]] = (3, 10),
-        target_size: Union[int, Iterable[int]] = (10, 50),
+        target_size: Union[int, Iterable[int]] = (10, 25),
         target_includes_context: bool = False,
         merge_context_target: bool = False,
         shape_function: Union[Callable, Iterable[Callable]] = shape.circle,
@@ -68,7 +70,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             start_x=(0.0, 1.0), start_y=(0.0, 1.0), end_x=(0.0, 1.0), end_y=(0.0, 1.0)
         ),
         num_objects: int = 1,
-        min_length: float = 0.0,
+        min_length: float = 0.5,
         meta_trajectories: bool = False,
         circular_position: Union[bool, Iterable[bool]] = False,
         num_max: int = 100,
@@ -80,6 +82,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
         )
         super().__init__(None, batch_size, number_of_threads_in_multithreaded)
 
+        self.batches_per_epoch = batches_per_epoch
         self.context_size = context_size
         self.target_size = target_size
         self.target_includes_context = target_includes_context
@@ -115,6 +118,11 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             self.circular_position = [circular_position] * num_objects
         self.num_max = num_max
         self.image_size = image_size
+
+        self.current_batch = 0
+
+    def __len__(self):
+        return self.batches_per_epoch
 
     def generate_item(
         self,
@@ -324,6 +332,10 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
         Dict[str, np.ndarray], Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]
     ]:
 
+        if self.current_batch >= self.batches_per_epoch:
+            self.current_batch = 0
+            raise StopIteration
+
         # everything we need to look at for generator function
         shape_params = []
         for i in range(self.num_objects):
@@ -385,6 +397,8 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
                 val = val[:, :, None]
             batch_params_target[key] = val
 
+        self.current_batch += 1
+
         if self.merge_context_target:
             return ct_to_transformable(
                 batch_params_context,
@@ -401,6 +415,7 @@ class ToyModule(pl.LightningDataModule):
 
     Args:
         batch_size: Number of independent examples.
+        batches_per_epoch: Number of batches per epoch. Also exists with _val suffix.
         context_size: Size of context set.
         target_size: Size of target set.
         target_includes_context: If True, the context is added to the target set.
@@ -433,9 +448,10 @@ class ToyModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        batch_size: int = 128,
+        batch_size: int = 32,
+        batches_per_epoch: int = 1000,
         context_size: Union[int, Iterable[int]] = (3, 10),
-        target_size: Union[int, Iterable[int]] = (10, 50),
+        target_size: Union[int, Iterable[int]] = (10, 25),
         target_includes_context: bool = False,
         merge_context_target: bool = False,
         shape_function: Union[str, Iterable[str]] = "circle",
@@ -453,15 +469,17 @@ class ToyModule(pl.LightningDataModule):
             start_x=(0.0, 1.0), start_y=(0.0, 1.0), end_x=(0.0, 1.0), end_y=(0.0, 1.0)
         ),
         num_objects: int = 1,
-        min_length: float = 0.0,
+        min_length: float = 0.5,
         meta_trajectories: bool = False,
         circular_position: Union[bool, Iterable[bool]] = False,
         num_max: int = 100,
         image_size: int = 64,
+        batches_per_epoch_val: int = 100,
         batch_size_test: Optional[int] = None,
+        batches_per_epoch_test: Optional[int] = None,
         context_size_test: Optional[Union[int, Iterable[int]]] = None,
-        target_size_test: Optional[Union[int, Iterable[int]]] = None,
-        target_includes_context_test: Optional[bool] = None,
+        target_size_test: Optional[Union[int, Iterable[int]]] = (50, 51),
+        target_includes_context_test: Optional[bool] = False,
         merge_context_target_test: Optional[bool] = None,
         shape_function_test: Optional[Union[str, Iterable[str]]] = None,
         shape_kwargs_test: Optional[
@@ -491,6 +509,7 @@ class ToyModule(pl.LightningDataModule):
         super().__init__()
 
         self.batch_size = batch_size
+        self.batches_per_epoch = batches_per_epoch
         self.context_size = context_size
         self.target_size = target_size
         self.target_includes_context = target_includes_context
@@ -534,6 +553,7 @@ class ToyModule(pl.LightningDataModule):
         self.image_size = image_size
         for kw in self.shape_kwargs:
             kw["image_size"] = image_size
+        self.batches_per_epoch_val = batches_per_epoch_val
 
         # test args
         self.num_objects_test = (
@@ -541,6 +561,11 @@ class ToyModule(pl.LightningDataModule):
         )
         self.batch_size_test = (
             batch_size_test if batch_size_test is not None else self.batch_size
+        )
+        self.batches_per_epoch_test = (
+            batches_per_epoch_test
+            if batches_per_epoch_test is not None
+            else self.batches_per_epoch
         )
         self.context_size_test = (
             context_size_test if context_size_test is not None else context_size
@@ -648,6 +673,7 @@ class ToyModule(pl.LightningDataModule):
 
         train_gen = RandomTrajectoryGenerator(
             batch_size=self.batch_size,
+            batches_per_epoch=self.batches_per_epoch,
             context_size=self.context_size,
             target_size=self.target_size,
             target_includes_context=self.target_includes_context,
@@ -674,6 +700,7 @@ class ToyModule(pl.LightningDataModule):
 
         val_gen = RandomTrajectoryGenerator(
             batch_size=self.batch_size,
+            batches_per_epoch=self.batches_per_epoch_val,
             context_size=self.context_size,
             target_size=self.target_size,
             target_includes_context=self.target_includes_context,
@@ -700,6 +727,7 @@ class ToyModule(pl.LightningDataModule):
 
         test_gen = RandomTrajectoryGenerator(
             batch_size=self.batch_size_test,
+            batches_per_epoch=self.batches_per_epoch_test,
             context_size=self.context_size_test,
             target_size=self.target_size_test,
             target_includes_context=self.target_includes_context_test,
@@ -728,9 +756,10 @@ class ToyModule(pl.LightningDataModule):
         parser = argparse.ArgumentParser(
             parents=[parent_parser], add_help=False, conflict_handler="resolve"
         )
-        parser.add_argument("--batch_size", type=int, default=128)
+        parser.add_argument("--batch_size", type=int, default=32)
+        parser.add_argument("--batches_per_epoch", type=int, default=1000)
         parser.add_argument("--context_size", type=int, nargs=2, default=(3, 10))
-        parser.add_argument("--target_size", type=int, nargs=2, default=(10, 50))
+        parser.add_argument("--target_size", type=int, nargs=2, default=(10, 25))
         parser.add_argument("--target_includes_context", type=str2bool, default=False)
         parser.add_argument("--merge_context_target", type=str2bool, default=False)
         parser.add_argument("--shape_function", type=str, default="circle")
@@ -759,17 +788,18 @@ class ToyModule(pl.LightningDataModule):
             ),
         )
         parser.add_argument("--num_objects", type=int, default=1)
-        parser.add_argument("--min_length", type=float, default=0.0)
+        parser.add_argument("--min_length", type=float, default=0.5)
         parser.add_argument("--meta_trajectories", type=str2bool, default=False)
         parser.add_argument("--circular_position", type=str2bool, default=False)
         parser.add_argument("--num_max", type=int, default=100)
         parser.add_argument("--image_size", type=int, default=64)
 
         parser.add_argument("--batch_size_test", type=int, default=None)
+        parser.add_argument("--batches_per_epoch_test", type=int, default=None)
         parser.add_argument("--context_size_test", type=int, nargs=2, default=None)
-        parser.add_argument("--target_size_test", type=int, nargs=2, default=None)
+        parser.add_argument("--target_size_test", type=int, nargs=2, default=(50, 51))
         parser.add_argument(
-            "--target_includes_context_test", type=str2bool, default=None
+            "--target_includes_context_test", type=str2bool, default=False
         )
         parser.add_argument("--merge_context_target_test", type=str2bool, default=None)
         parser.add_argument("--shape_function_test", type=str, default=None)
