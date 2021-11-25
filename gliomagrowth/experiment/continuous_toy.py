@@ -15,6 +15,7 @@ from gliomagrowth.util.util import (
     nn_module_lookup,
     make_onehot,
     stack_batch,
+    unstack_batch,
 )
 from gliomagrowth.util.lightning import (
     VisdomLogger,
@@ -422,11 +423,15 @@ class ContinuousSegmentation(pl.LightningModule):
             loss_task = self.criterion_task(
                 stack_batch(prediction), stack_batch(target_seg)
             )
+        if loss_task.ndim > 1:
+            loss_task = unstack_batch(loss_task, prediction.shape[0])
+
         # when reduction is none, we do sum and batch average
-        while loss_task.dim() > 1:
+        while loss_task.ndim > 1:
             loss_task = loss_task.sum(-1)
         if loss_aggregate:
             loss_task = loss_task.mean(0)
+
         log = {"loss_task": loss_task}
 
         # during validation we need to manually encode the posterior
@@ -443,7 +448,7 @@ class ContinuousSegmentation(pl.LightningModule):
         while loss_latent.ndim > 1:
             loss_latent = loss_latent.sum(-1)
         if loss_aggregate:
-            loss_latent = loss_latent.mean(0).sum()
+            loss_latent = loss_latent.mean(0)
         loss_total = loss_task + self.hparams.criterion_latent_weight * loss_latent
         log["loss_latent"] = loss_latent
         log["loss_total"] = loss_total
@@ -697,88 +702,14 @@ class ContinuousSegmentation(pl.LightningModule):
             batch, batch_idx, return_all=True, loss_aggregate=False
         )
 
-        import IPython
-
-        IPython.embed()
-
         self.criterion_task.reduction = old_reduction_task
         self.criterion_latent.reduction = old_reduction_latent
 
-        gt_segmentation = log_tensor["target_seg"][:, -1]
-        prediction = log_tensor["prediction"][:, -1]
-        prediction = torch.argmax(prediction, 1, keepdim=True)
-        dice_wt = dice(
-            prediction,
-            torch.argmax(gt_segmentation, 1, keepdim=True),
-            batch_axes=(0, 1),
-        )
-        prediction = make_onehot(prediction, range(self.hparams.num_classes), axis=1)
-        dice_all = dice(prediction, gt_segmentation, batch_axes=(0, 1))
-        dice_all = torch.cat((dice_all, dice_wt), 1)
-
-        # make samples
-        samples = self.model.sample(
-            self.hparams.test_dice_samples,
-            log_tensor["context_query"],
-            log_tensor["target_query"][:, -1:],
-            log_tensor["context_image"],
-            log_tensor["context_seg"] if self.hparams.use_context_seg else None,
-            None,
-        )[:, :, -1]
-        samples = torch.argmax(samples, 2, keepdim=True)
-        dice_wt_samples = dice(
-            samples,
-            torch.argmax(gt_segmentation, 1, keepdim=True).expand_as(samples),
-            batch_axes=(0, 1, 2),
-        )
-        samples = make_onehot(samples, range(self.hparams.num_classes), axis=2)
-        dice_all_samples = dice(
-            samples, gt_segmentation.expand_as(samples), batch_axes=(0, 1, 2)
-        )
-        dice_all_samples = torch.cat((dice_all_samples, dice_wt_samples), 2)
-
-        # PyTorch doesn't have nanmax, apparently
-        nan_locations = torch.isnan(dice_all_samples)
-        dice_all_samples[nan_locations] = 0
-        best_dice = torch.max(dice_all_samples, 0)[0]
-        dice_all_samples[nan_locations] = np.nan
-
-        # get volumes
-        sum_axes = tuple(range(2, samples.ndim))
-        pred_volumes = torch.sum(torch.argmax(samples, 2, keepdim=True) > 0, sum_axes)
-        gt_volume = torch.from_numpy(gt_volume).to(
-            dtype=pred_volumes.dtype, device=pred_volumes.device
-        )
-        best_volume_index = torch.argmin(
-            torch.abs(pred_volumes - gt_volume[None, :]), 0
-        )
-        best_volume_dice = dice_all_samples[best_volume_index]
-        best_volume_dice = torch.stack(
-            [dice_all_samples[i, b] for b, i in enumerate(best_volume_index)]
-        )
-
-        subject_info = []
-        for b in range(batch["batch_size"]):
-            info_str = [
-                log_tensor["subjects"][b],
-                "c" + ",".join(map(str, log_tensor["context_timesteps"][b, :, 0])),
-                "t" + ",".join(map(str, log_tensor["target_timesteps"][b, :, 0])),
-            ]
-            if "slices" in log_tensor:
-                info_str.append("slc" + str(log_tensor["slices"][b]))
-            subject_info.append("_".join(info_str))
-        subject_info = np.array(subject_info, dtype=object)[:, None]
-
         result = np.concatenate(
             (
-                subject_info,
-                gt_volume[:, None].cpu().numpy(),
                 log["loss_task"][:, None].cpu().numpy(),
                 log["loss_latent"][:, None].cpu().numpy(),
                 log["loss_total"][:, None].cpu().numpy(),
-                dice_all.cpu().numpy(),
-                best_volume_dice.cpu().numpy(),
-                best_dice.cpu().numpy(),
             ),
             1,
         )
@@ -788,28 +719,13 @@ class ContinuousSegmentation(pl.LightningModule):
     def test_epoch_end(self, outputs):
 
         columns = [
-            "Info",
-            "GT Volume",
             "Loss Task",
             "Loss Latent",
             "Loss",
         ]
-        columns_dice = ["Dice Foreground"]
-        columns_best_volume_dice = ["Best Volume Dice Foreground"]
-        columns_best_dice = ["Best Dice Foreground"]
-        for c in range(self.hparams.num_classes):
-            columns_dice.insert(-1, "Dice Class " + str(c))
-            columns_best_volume_dice.insert(-1, "Best Volume Dice Class " + str(c))
-            columns_best_dice.insert(-1, "Best Dice Class " + str(c))
 
-        arr = pd.DataFrame(
-            np.concatenate(outputs, 0),
-            columns=columns
-            + columns_dice
-            + columns_best_volume_dice
-            + columns_best_dice,
-        )
-        arr = arr.set_index("Info")
+        arr = pd.DataFrame(np.concatenate(outputs, 0), columns=columns)
+        # arr = arr.set_index("Info")
         arr.to_csv(os.path.join(self.trainer._default_root_dir, "test.csv"))
 
         arr = arr.mean().to_dict()
@@ -918,6 +834,7 @@ if __name__ == "__main__":
         args.mlflow = "file://" + os.path.join(args.base_dir, "mlruns")
     if "--max_epochs" not in sys.argv:
         args.max_epochs = 300
+    args.num_classes = args.num_objects + 1
 
     experiment_name = "{}_{}".format(
         os.path.basename(__file__).split(".")[0], temp_args.data
