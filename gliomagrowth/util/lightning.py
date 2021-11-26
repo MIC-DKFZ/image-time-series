@@ -517,16 +517,27 @@ class DictArgument(argparse.Action):
         else:
             for kv in values:
                 k, v = kv.split("=")
-                try:
-                    kv = json.loads("{" + '"{}":{}'.format(k, v) + "}")
-                except json.decoder.JSONDecodeError:
+                if (v.startswith("[") and v.endswith("]")) or (
+                    v.startswith("(") and v.endswith(")")
+                ):
+                    v = [val.strip() for val in v[1:-1].split(",")]
+                    for i in range(len(v)):
+                        try:
+                            v[i] = json.loads(v[i])
+                        except json.decoder.JSONDecodeError as e:
+                            raise e
+                    my_dict[k] = v
+                else:
                     try:
-                        kv = json.loads("{" + '"{}":"{}"'.format(k, v) + "}")
+                        kv = json.loads("{" + '"{}":{}'.format(k, v) + "}")
+                    except json.decoder.JSONDecodeError:
+                        try:
+                            kv = json.loads("{" + '"{}":"{}"'.format(k, v) + "}")
+                        except Exception as e:
+                            raise e
                     except Exception as e:
                         raise e
-                except Exception as e:
-                    raise e
-                my_dict.update(kv)
+                    my_dict.update(kv)
             setattr(namespace, self.dest, my_dict)
 
 
