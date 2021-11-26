@@ -283,7 +283,7 @@ class ContinuousTumorGrowth(pl.LightningModule):
         # configure decoder
         in_channels = [hparams.representation_channels + 1]
         for i in range(hparams.model_spatial_attention):
-            in_channels.append(hparams.representation_channels)
+            in_channels.append(hparams.model_att_embed_dim)
         for i in range(hparams.model_temporal_attention):
             fmaps = (
                 hparams.model_feature_maps

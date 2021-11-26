@@ -223,7 +223,7 @@ class ContinuousSegmentation(pl.LightningModule):
             return_last=1
             + hparams.model_spatial_attention
             + hparams.model_temporal_attention,
-            in_channels=1 + hparams.num_classes,
+            in_channels=2 * hparams.num_classes - 1,
             out_channels=2 * hparams.representation_channels,
             depth=hparams.model_depth,
             block_depth=hparams.model_block_depth,
@@ -247,15 +247,16 @@ class ContinuousSegmentation(pl.LightningModule):
         )
 
         # configure decoder
-        in_channels = [hparams.representation_channels + 1]
+        in_channels = [hparams.representation_channels + hparams.num_classes - 1]
         for i in range(hparams.model_spatial_attention):
-            in_channels.append(hparams.representation_channels)
+            in_channels.append(hparams.model_att_embed_dim)
         for i in range(hparams.model_temporal_attention):
             fmaps = (
                 hparams.model_feature_maps
                 * hparams.model_feature_map_multiplier
                 ** (hparams.model_depth - hparams.model_spatial_attention - i - 1)
-                + 1
+                + hparams.num_classes
+                - 1
             )
             in_channels.append(fmaps)
         in_channels = list(reversed(in_channels))
@@ -292,13 +293,14 @@ class ContinuousSegmentation(pl.LightningModule):
         )
 
         # configure attention
-        kdim = [hparams.representation_channels + 1]
-        vdim = [hparams.representation_channels + 1]
+        kdim = [hparams.representation_channels + hparams.num_classes - 1]
+        vdim = [hparams.representation_channels + hparams.num_classes - 1]
         for i in range(hparams.model_spatial_attention):
             fmaps = (
                 hparams.model_feature_maps
                 * hparams.model_feature_map_multiplier ** (hparams.model_depth - i - 1)
-                + 1
+                + hparams.num_classes
+                - 1
             )
             kdim.append(fmaps)
             vdim.append(fmaps)
@@ -313,7 +315,7 @@ class ContinuousSegmentation(pl.LightningModule):
             bias=True,
             batch_first=True,
             embed_v=True,
-            qdim=1,
+            qdim=hparams.num_classes - 1,
             kdim=kdim,
             vdim=vdim,
         )
@@ -325,8 +327,8 @@ class ContinuousSegmentation(pl.LightningModule):
             bias=True,
             batch_first=True,
             embed_v=False,
-            qdim=1,
-            kdim=1,
+            qdim=hparams.num_classes - 1,
+            kdim=hparams.num_classes - 1,
             vdim=None,
         )
 
@@ -424,11 +426,13 @@ class ContinuousSegmentation(pl.LightningModule):
         if loss_task.ndim > 1:
             loss_task = unstack_batch(loss_task, prediction.shape[0])
 
-        # when reduction is none, we do sum and batch average
-        while loss_task.ndim > 1:
+        # when reduction is none, we do sum and batch/point average
+        while loss_task.ndim > 2:
             loss_task = loss_task.sum(-1)
         if loss_aggregate:
-            loss_task = loss_task.mean(0)
+            loss_task = loss_task.mean()
+        else:
+            loss_task = loss_task.mean(1)
 
         log = {"loss_task": loss_task}
 
@@ -446,7 +450,7 @@ class ContinuousSegmentation(pl.LightningModule):
         while loss_latent.ndim > 1:
             loss_latent = loss_latent.sum(-1)
         if loss_aggregate:
-            loss_latent = loss_latent.mean(0)
+            loss_latent = loss_latent.mean()
         loss_total = loss_task + self.hparams.criterion_latent_weight * loss_latent
         log["loss_latent"] = loss_latent
         log["loss_total"] = loss_total
@@ -482,6 +486,7 @@ class ContinuousSegmentation(pl.LightningModule):
         scale_each: bool = False,
         pad_value: float = 0.0,
         split_channels: bool = True,
+        point_average: bool = False,
     ):
         """Log a tensor.
 
@@ -503,13 +508,19 @@ class ContinuousSegmentation(pl.LightningModule):
             scale_each: Normalize each item separately.
             pad_value: Fill value for padding.
             split_channels: Make separate image grid for each channel.
+            point_average: Average over context or target points. Otherwise the last one
+                will be used.
 
         """
 
         # Assume (B, N, C, H, W) shape. In 3D we just take the center along the first
         # axis. Shouldn't matter, because we usually work with random rotations anyway.
+        if point_average:
+            tensor = tensor[:ntotal].float().mean(1)
+        else:
+            tensor = tensor[:ntotal, -1].float()
         image_grid = make_grid(
-            tensor=tensor[:ntotal, -1].float(),
+            tensor=tensor,
             nrow=nrow,
             padding=padding,
             normalize=normalize,
@@ -600,6 +611,7 @@ class ContinuousSegmentation(pl.LightningModule):
                         scale_each=True,
                         pad_value=1,
                         split_channels=False,
+                        point_average="context" in key,
                     )
 
         return loss
@@ -645,6 +657,7 @@ class ContinuousSegmentation(pl.LightningModule):
                         scale_each=True,
                         pad_value=1,
                         split_channels=False,
+                        point_average="context" in key,
                     )
 
             # samples
@@ -710,8 +723,10 @@ class ContinuousSegmentation(pl.LightningModule):
         scores = dice(prediction, target_seg, batch_axes=(0, 1, 2))
         scores = scores.mean(1)  # average along trajectory
 
+        num_context = log_tensor["context_positions"].shape[1]
         result = np.concatenate(
             (
+                np.array([num_context] * scores.shape[0])[:, None],
                 log["loss_task"][:, None].cpu().numpy(),
                 log["loss_latent"][:, None].cpu().numpy(),
                 log["loss_total"][:, None].cpu().numpy(),
@@ -725,6 +740,7 @@ class ContinuousSegmentation(pl.LightningModule):
     def test_epoch_end(self, outputs):
 
         columns = [
+            "Context Size",
             "Loss Task",
             "Loss Latent",
             "Loss",

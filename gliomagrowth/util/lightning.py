@@ -512,19 +512,22 @@ class DictArgument(argparse.Action):
 
     def __call__(self, parser, namespace, values, option_string=None):
         my_dict = {}
-        for kv in values:
-            k, v = kv.split("=")
-            try:
-                kv = json.loads("{" + '"{}":{}'.format(k, v) + "}")
-            except json.decoder.JSONDecodeError:
+        if len(values) == 1 and values[0] == "none":
+            setattr(namespace, self.dest, None)
+        else:
+            for kv in values:
+                k, v = kv.split("=")
                 try:
-                    kv = json.loads("{" + '"{}":"{}"'.format(k, v) + "}")
+                    kv = json.loads("{" + '"{}":{}'.format(k, v) + "}")
+                except json.decoder.JSONDecodeError:
+                    try:
+                        kv = json.loads("{" + '"{}":"{}"'.format(k, v) + "}")
+                    except Exception as e:
+                        raise e
                 except Exception as e:
                     raise e
-            except Exception as e:
-                raise e
-            my_dict.update(kv)
-        setattr(namespace, self.dest, my_dict)
+                my_dict.update(kv)
+            setattr(namespace, self.dest, my_dict)
 
 
 def log_model_summary(experiment: LightningModule):
