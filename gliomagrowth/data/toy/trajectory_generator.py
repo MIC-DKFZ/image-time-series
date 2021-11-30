@@ -44,6 +44,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             essentially controls the spacing between points, because we use linspace to
             construct the trajectory.
         image_size: Size of the image.
+        join_objects: If True, the individual objects will belong to the same class.
 
     """
 
@@ -75,6 +76,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
         circular_position: Union[bool, Iterable[bool]] = False,
         num_max: int = 100,
         image_size: int = 64,
+        join_objects: bool = False,
         **kwargs,
     ):
         number_of_threads_in_multithreaded = kwargs.get(
@@ -118,6 +120,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             self.circular_position = [circular_position] * num_objects
         self.num_max = num_max
         self.image_size = image_size
+        self.join_objects = join_objects
 
         self.current_batch = 0
 
@@ -314,6 +317,10 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
                 ).astype(bool)
                 data_target[i, 0][img] = t + 1
 
+        if self.join_objects and self.num_objects > 1:
+            data_context = data_context.astype(bool).astype(np.uint8)
+            data_target = data_target.astype(bool).astype(np.uint8)
+
         for key, val in params_context.items():
             if key != "position":
                 params_context[key] = np.array(val, dtype=np.float32).T
@@ -409,7 +416,7 @@ class RandomTrajectoryGenerator(SlimDataLoaderBase):
             return batch_params_context, batch_params_target
 
 
-class ToyModule(pl.LightningDataModule):
+class RandomTrajectoryModule(pl.LightningDataModule):
     """LightningDataModule that wraps data generator. For each argument there is also
     argument_test, which can optionally be used to change the test data.
 
@@ -443,6 +450,7 @@ class ToyModule(pl.LightningDataModule):
             essentially controls the spacing between points, because we use linspace to
             construct the trajectory.
         image_size: Size of the image.
+        join_objects: If True, the individual objects will belong to the same class.
 
     """
 
@@ -474,6 +482,7 @@ class ToyModule(pl.LightningDataModule):
         circular_position: Union[bool, Iterable[bool]] = False,
         num_max: int = 100,
         image_size: int = 64,
+        join_objects: bool = False,
         batches_per_epoch_val: int = 100,
         batch_size_test: Optional[int] = None,
         batches_per_epoch_test: Optional[int] = None,
@@ -503,6 +512,7 @@ class ToyModule(pl.LightningDataModule):
         circular_position_test: Optional[Union[bool, Iterable[bool]]] = None,
         num_max_test: Optional[int] = None,
         image_size_test: Optional[int] = None,
+        join_objects_test: Optional[bool] = None,
         **kwargs,
     ):
 
@@ -553,6 +563,7 @@ class ToyModule(pl.LightningDataModule):
         self.image_size = image_size
         for kw in self.shape_kwargs:
             kw["image_size"] = image_size
+        self.join_objects = join_objects
         self.batches_per_epoch_val = batches_per_epoch_val
 
         # test args
@@ -661,6 +672,9 @@ class ToyModule(pl.LightningDataModule):
         )
         for kw in self.shape_kwargs_test:
             kw["image_size"] = self.image_size_test
+        self.join_objects_test = (
+            join_objects_test if join_objects_test is not None else self.join_objects
+        )
 
     def setup(self, stage: Optional[str] = None) -> None:
         """Doesn't do anything..."""
@@ -689,6 +703,7 @@ class ToyModule(pl.LightningDataModule):
             circular_position=self.circular_position,
             num_max=self.num_max,
             image_size=self.image_size,
+            join_objects=self.join_objects,
         )
 
         return train_gen
@@ -716,6 +731,7 @@ class ToyModule(pl.LightningDataModule):
             circular_position=self.circular_position,
             num_max=self.num_max,
             image_size=self.image_size,
+            join_objects=self.join_objects,
         )
 
         return val_gen
@@ -793,6 +809,9 @@ class ToyModule(pl.LightningDataModule):
         parser.add_argument("--circular_position", type=str2bool, default=False)
         parser.add_argument("--num_max", type=int, default=100)
         parser.add_argument("--image_size", type=int, default=64)
+        parser.add_argument("--join_objects", type=str2bool, default=False)
+
+        parser.add_argument("--batches_per_epoch_val", type=int, default=100)
 
         parser.add_argument("--batch_size_test", type=int, default=None)
         parser.add_argument("--batches_per_epoch_test", type=int, default=None)
@@ -828,11 +847,14 @@ class ToyModule(pl.LightningDataModule):
         parser.add_argument("--circular_position_test", type=str2bool, default=None)
         parser.add_argument("--num_max_test", type=int, default=None)
         parser.add_argument("--image_size_test", type=int, default=None)
+        parser.add_argument("--join_objects_test", type=str2bool, default=None)
 
         return parser
 
     @classmethod
-    def load_from_checkpoint(cls: type, checkpoint_path: str, **kwargs) -> ToyModule:
+    def load_from_checkpoint(
+        cls: type, checkpoint_path: str, **kwargs
+    ) -> RandomTrajectoryModule:
         """Load module from checkpoint.
 
         Args:
@@ -850,7 +872,7 @@ class ToyModule(pl.LightningDataModule):
 # for quick debugging :)
 if __name__ == "__main__":
 
-    mod = ToyModule(
+    mod = RandomTrajectoryModule(
         batch_size=1,
         context_size=5,
         target_size=50,

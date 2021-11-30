@@ -771,7 +771,7 @@ class ContinuousSegmentation(pl.LightningModule):
         parser.add_argument("--criterion_latent_weight", type=float, default=0.01)
         parser.add_argument("--optimizer", type=str, default="adam")
         parser.add_argument("--learning_rate", type=float, default=0.001)
-        parser.add_argument("--step_lr", type=str2bool, default=True)
+        parser.add_argument("--step_lr", type=str2bool, default=False)
         parser.add_argument("--step_lr_gamma", type=float, default=0.99)
         parser.add_argument("--reduce_lr_on_plateau", type=str2bool, default=False)
         parser.add_argument("--reduce_lr_factor", type=float, default=0.1)

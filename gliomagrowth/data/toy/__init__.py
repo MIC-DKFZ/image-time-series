@@ -1,2 +1,2 @@
-from . import trajectory, shape, generator
-from .generator import ToyModule
+from . import trajectory, shape, trajectory_generator
+from .trajectory_generator import RandomTrajectoryModule as ToyModule
